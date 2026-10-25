@@ -102,14 +102,14 @@ class AndroidMlKitPdfOcrEngine(
 
     private val flashLiteVisionModel by lazy {
         Firebase.ai.generativeModel(
-            modelName = "gemini-2.5-flash-lite",
+            modelName = "gemini-3.5-flash-lite",
             generationConfig = ocrGenerationConfig
         )
     }
 
     private val flashVisionModel by lazy {
         Firebase.ai.generativeModel(
-            modelName = "gemini-2.5-flash",
+            modelName = "gemini-3.8-flash",
             generationConfig = ocrGenerationConfig
         )
     }

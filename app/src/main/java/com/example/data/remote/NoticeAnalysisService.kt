@@ -54,7 +54,7 @@ interface NoticeAiGateway {
 
 /**
  * Low-latency composite AI gateway that:
- * 1. Uses Firebase AI Logic (`gemini-2.5-flash-lite` and `gemini-2.5-flash` with structured JSON
+ * 1. Uses Firebase AI Logic (`gemini-3.5-flash-lite` and `gemini-3.8-flash` with structured JSON
  *    schema via `Schema.obj`) for both text and single-pass multimodal image/PDF vision analysis.
  * 2. Falls back to `HttpNoticeAiGateway` if configured via environment / BuildConfig.
  * 3. Returns a clear, honest failure if all cloud AI calls fail, never generating fake descriptions.
@@ -117,14 +117,14 @@ class ResilientNoticeAiGateway(
 
     private val flashLiteModel by lazy {
         Firebase.ai.generativeModel(
-            modelName = "gemini-2.5-flash-lite",
+            modelName = "gemini-3.5-flash-lite",
             generationConfig = structuredGenerationConfig
         )
     }
 
     private val flashModel by lazy {
         Firebase.ai.generativeModel(
-            modelName = "gemini-2.5-flash",
+            modelName = "gemini-3.8-flash",
             generationConfig = structuredGenerationConfig
         )
     }
@@ -138,43 +138,46 @@ class ResilientNoticeAiGateway(
         val combinedPrompt = "$systemPrompt\n\n$userPrompt"
         var lastError: Exception? = null
 
-        // 1. Primary: Ultra-fast Firebase AI Logic (gemini-2.5-flash-lite -> gemini-2.5-flash)
-        val startMs = System.currentTimeMillis()
-        AppDiagnosticLogger.info("AI", "Starting text notice analysis via Firebase AI Logic (${userPrompt.length} prompt chars)...")
-        try {
-            val response = withTimeout(35_000L) {
-                runCatching {
-                    flashLiteModel.generateContent(combinedPrompt)
-                }.getOrElse {
-                    flashModel.generateContent(combinedPrompt)
+        // 1. Primary: Ultra-fast Firebase AI Logic (gemini-3.5-flash-lite -> gemini-3.8-flash)
+        if (firebaseAiHealthyInSession || !httpFallbackGateway.isConfigured()) {
+            val startMs = System.currentTimeMillis()
+            AppDiagnosticLogger.info("AI", "Starting text notice analysis via Firebase AI Logic (${userPrompt.length} prompt chars)...")
+            try {
+                val response = withTimeout(35_000L) {
+                    runCatching {
+                        flashLiteModel.generateContent(combinedPrompt)
+                    }.getOrElse {
+                        flashModel.generateContent(combinedPrompt)
+                    }
                 }
+                val text = response.text.orEmpty().trim()
+                if (text.isNotBlank() && text.contains("{")) {
+                    firebaseAiHealthyInSession = true
+                    val elapsed = System.currentTimeMillis() - startMs
+                    AppDiagnosticLogger.info("AI", "Firebase AI text analysis succeeded in ${elapsed}ms (${text.length} response chars).")
+                    return@withContext Result.success(text)
+                }
+            } catch (e: TimeoutCancellationException) {
+                lastError = NoticeAnalysisException("Notice analysis timed out. Please check your internet connection and try again.", e)
+                AppDiagnosticLogger.error("AI", "Firebase AI text generation timed out", e)
+                Log.e(TAG, "Firebase AI generation timed out", e)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                firebaseAiHealthyInSession = false
+                lastError = e
+                AppDiagnosticLogger.warn("AI", "Firebase AI text request failed, checking fallback gateway", e)
+                Log.e(TAG, "Firebase AI Logic text request failed: ${e.message}", e)
             }
-            val text = response.text.orEmpty().trim()
-            if (text.isNotBlank() && text.contains("{")) {
-                firebaseAiHealthyInSession = true
-                val elapsed = System.currentTimeMillis() - startMs
-                AppDiagnosticLogger.info("AI", "Firebase AI text analysis succeeded in ${elapsed}ms (${text.length} response chars).")
-                return@withContext Result.success(text)
-            }
-        } catch (e: TimeoutCancellationException) {
-            lastError = NoticeAnalysisException("Notice analysis timed out. Please check your internet connection and try again.", e)
-            AppDiagnosticLogger.error("AI", "Firebase AI text generation timed out", e)
-            Log.e(TAG, "Firebase AI generation timed out", e)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            firebaseAiHealthyInSession = false
-            lastError = e
-            AppDiagnosticLogger.warn("AI", "Firebase AI text request failed, checking fallback gateway", e)
-            Log.e(TAG, "Firebase AI Logic text request failed: ${e.message}", e)
         }
 
         // 2. Fallback: Configured HTTP gateway (if user provided an API key)
         if (httpFallbackGateway.isConfigured()) {
+            val httpStartMs = System.currentTimeMillis()
             AppDiagnosticLogger.info("AI", "Trying HTTP fallback gateway for text notice analysis...")
             val httpResult = httpFallbackGateway.completeNoticeAnalysisPrompt(systemPrompt, userPrompt)
             if (httpResult.isSuccess) {
-                val elapsed = System.currentTimeMillis() - startMs
+                val elapsed = System.currentTimeMillis() - httpStartMs
                 AppDiagnosticLogger.info("AI", "HTTP fallback text analysis succeeded in ${elapsed}ms.")
                 return@withContext httpResult
             }
@@ -204,48 +207,51 @@ class ResilientNoticeAiGateway(
         val combinedPrompt = "$systemPrompt\n\n$userPrompt"
         var lastError: Exception? = null
 
-        // 1. Single-pass multimodal vision analysis via Firebase AI Logic (gemini-2.5-flash / gemini-2.5-flash-lite)
-        val startMs = System.currentTimeMillis()
-        AppDiagnosticLogger.info("AI", "Starting multimodal vision analysis (${bitmaps.size} page bitmaps)...")
-        try {
-            val multimodalContent = content {
-                bitmaps.take(4).forEach { bmp ->
-                    if (!bmp.isRecycled) {
-                        image(bmp)
+        // 1. Single-pass multimodal vision analysis via Firebase AI Logic (gemini-3.8-flash / gemini-3.5-flash-lite)
+        if (firebaseAiHealthyInSession || !httpFallbackGateway.isConfigured()) {
+            val startMs = System.currentTimeMillis()
+            AppDiagnosticLogger.info("AI", "Starting multimodal vision analysis (${bitmaps.size} page bitmaps)...")
+            try {
+                val multimodalContent = content {
+                    bitmaps.take(4).forEach { bmp ->
+                        if (!bmp.isRecycled) {
+                            image(bmp)
+                        }
+                    }
+                    text(combinedPrompt)
+                }
+
+                val response = withTimeout(40_000L) {
+                    runCatching {
+                        flashModel.generateContent(multimodalContent)
+                    }.getOrElse {
+                        flashLiteModel.generateContent(multimodalContent)
                     }
                 }
-                text(combinedPrompt)
-            }
-
-            val response = withTimeout(40_000L) {
-                runCatching {
-                    flashModel.generateContent(multimodalContent)
-                }.getOrElse {
-                    flashLiteModel.generateContent(multimodalContent)
+                val text = response.text.orEmpty().trim()
+                if (text.isNotBlank() && text.contains("{")) {
+                    firebaseAiHealthyInSession = true
+                    val elapsed = System.currentTimeMillis() - startMs
+                    AppDiagnosticLogger.info("AI", "Firebase multimodal vision analysis succeeded in ${elapsed}ms.")
+                    return@withContext Result.success(text)
                 }
+            } catch (e: TimeoutCancellationException) {
+                lastError = NoticeAnalysisException("Notice image analysis timed out. Please check your internet connection and try again.", e)
+                AppDiagnosticLogger.error("AI", "Firebase multimodal vision generation timed out", e)
+                Log.e(TAG, "Firebase multimodal generation timed out", e)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                firebaseAiHealthyInSession = false
+                lastError = e
+                AppDiagnosticLogger.warn("AI", "Firebase multimodal vision request failed, checking fallback gateway", e)
+                Log.e(TAG, "Firebase multimodal request failed: ${e.message}", e)
             }
-            val text = response.text.orEmpty().trim()
-            if (text.isNotBlank() && text.contains("{")) {
-                firebaseAiHealthyInSession = true
-                val elapsed = System.currentTimeMillis() - startMs
-                AppDiagnosticLogger.info("AI", "Firebase multimodal vision analysis succeeded in ${elapsed}ms.")
-                return@withContext Result.success(text)
-            }
-        } catch (e: TimeoutCancellationException) {
-            lastError = NoticeAnalysisException("Notice image analysis timed out. Please check your internet connection and try again.", e)
-            AppDiagnosticLogger.error("AI", "Firebase multimodal vision generation timed out", e)
-            Log.e(TAG, "Firebase multimodal generation timed out", e)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            firebaseAiHealthyInSession = false
-            lastError = e
-            AppDiagnosticLogger.warn("AI", "Firebase multimodal vision request failed, checking fallback gateway", e)
-            Log.e(TAG, "Firebase multimodal request failed: ${e.message}", e)
         }
 
         // 2. Fallback: Multimodal HTTP gateway if configured
         if (httpFallbackGateway.isConfigured()) {
+            val httpStartMs = System.currentTimeMillis()
             AppDiagnosticLogger.info("AI", "Trying HTTP fallback gateway for multimodal vision analysis...")
             val httpResult = httpFallbackGateway.completeMultimodalNoticeAnalysisPrompt(
                 systemPrompt = systemPrompt,
@@ -253,7 +259,7 @@ class ResilientNoticeAiGateway(
                 bitmaps = bitmaps
             )
             if (httpResult.isSuccess) {
-                val elapsed = System.currentTimeMillis() - startMs
+                val elapsed = System.currentTimeMillis() - httpStartMs
                 AppDiagnosticLogger.info("AI", "HTTP fallback multimodal vision analysis succeeded in ${elapsed}ms.")
                 return@withContext httpResult
             }
