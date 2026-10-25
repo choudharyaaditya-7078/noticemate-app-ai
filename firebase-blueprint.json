@@ -1,0 +1,158 @@
+{
+  "entities": {
+    "NoticeDocument": {
+      "title": "NoticeDocument",
+      "description": "Represents an extracted and evidence-validated campus notice with bilingual English and Hindi checklists, gap detection warnings, and grounded Q&A history.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "UID of the authenticated Google user who owns this notice."
+        },
+        "title": {
+          "type": "string",
+          "description": "Title or heading of the campus notice."
+        },
+        "rawNoticeText": {
+          "type": "string",
+          "description": "Raw OCR or pasted source text of the notice."
+        },
+        "purposeEn": {
+          "type": "string",
+          "description": "Plain-language summary of the notice purpose in English."
+        },
+        "purposeHi": {
+          "type": "string",
+          "description": "Plain-language summary of the notice purpose in Hindi."
+        },
+        "purposeQuote": {
+          "type": "string",
+          "description": "Exact verbatim quote from rawNoticeText grounding the purpose."
+        },
+        "deadline": {
+          "type": "string",
+          "description": "Extracted deadline date/time or explicit not-specified label."
+        },
+        "deadlineQuote": {
+          "type": "string",
+          "description": "Exact verbatim quote from rawNoticeText grounding the deadline."
+        },
+        "eligibilityEn": {
+          "type": "string",
+          "description": "Eligibility criteria in English."
+        },
+        "eligibilityHi": {
+          "type": "string",
+          "description": "Eligibility criteria in Hindi."
+        },
+        "eligibilityQuote": {
+          "type": "string",
+          "description": "Exact verbatim quote from rawNoticeText grounding eligibility."
+        },
+        "documentsRequired": {
+          "type": "string",
+          "description": "Required documents extracted from the notice."
+        },
+        "contactDetails": {
+          "type": "string",
+          "description": "Issuing office or contact person details."
+        },
+        "contactQuote": {
+          "type": "string",
+          "description": "Exact verbatim quote from rawNoticeText grounding contact details."
+        },
+        "checklistEn": {
+          "type": "array",
+          "description": "Sequential action checklist items in English."
+        },
+        "checklistHi": {
+          "type": "array",
+          "description": "Sequential action checklist items in Hindi."
+        },
+        "checklistQuotes": {
+          "type": "array",
+          "description": "Verbatim source quotes corresponding to each checklist item."
+        },
+        "completedIndices": {
+          "type": "array",
+          "description": "Zero-based indices of completed checklist items."
+        },
+        "flaggedMissingEn": {
+          "type": "array",
+          "description": "Missing or ambiguous details flagged by gap detection in English."
+        },
+        "flaggedMissingHi": {
+          "type": "array",
+          "description": "Missing or ambiguous details flagged by gap detection in Hindi."
+        },
+        "followUpQuestionsEn": {
+          "type": "array",
+          "description": "Recommended follow-up verification questions in English."
+        },
+        "followUpQuestionsHi": {
+          "type": "array",
+          "description": "Recommended follow-up verification questions in Hindi."
+        },
+        "qaEntries": {
+          "type": "array",
+          "description": "Grounded Q&A exchanges recorded for this notice."
+        },
+        "groundingScore": {
+          "type": "integer",
+          "description": "Percentage (0-100) of claims verified against verbatim source quotes."
+        },
+        "modelUsed": {
+          "type": "string",
+          "description": "Identifier of the Gemma 4 model and validation pipeline used."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the notice was saved (FieldValue.serverTimestamp())."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the notice was last updated (FieldValue.serverTimestamp())."
+        }
+      },
+      "required": [
+        "userId",
+        "title",
+        "rawNoticeText",
+        "purposeEn",
+        "purposeHi",
+        "purposeQuote",
+        "deadline",
+        "deadlineQuote",
+        "eligibilityEn",
+        "eligibilityHi",
+        "eligibilityQuote",
+        "documentsRequired",
+        "contactDetails",
+        "contactQuote",
+        "checklistEn",
+        "checklistHi",
+        "checklistQuotes",
+        "completedIndices",
+        "flaggedMissingEn",
+        "flaggedMissingHi",
+        "followUpQuestionsEn",
+        "followUpQuestionsHi",
+        "qaEntries",
+        "groundingScore",
+        "modelUsed",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}/notices/{noticeId}": {
+      "schema": {
+        "$ref": "#/entities/NoticeDocument"
+      },
+      "description": "Stores per-user analyzed notices, bilingual checklists, evidence quotes, gap alerts, and Q&A history."
+    }
+  }
+}

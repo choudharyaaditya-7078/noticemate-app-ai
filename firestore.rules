@@ -1,0 +1,121 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global default-deny safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isBoundedStringList(arr, maxLen) {
+      return arr is list && arr.size() <= maxLen && (arr.size() == 0 || arr[0] is string);
+    }
+
+    function isBoundedIntList(arr, maxLen) {
+      return arr is list && arr.size() <= maxLen && (arr.size() == 0 || arr[0] is int);
+    }
+
+    function isValidNoticeDocument(data) {
+      return data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 &&
+             data.userId == request.auth.uid &&
+             data.title is string && data.title.size() >= 1 && data.title.size() <= 300 &&
+             data.rawNoticeText is string && data.rawNoticeText.size() >= 1 && data.rawNoticeText.size() <= 15000 &&
+             data.purposeEn is string && data.purposeEn.size() >= 1 && data.purposeEn.size() <= 2000 &&
+             data.purposeHi is string && data.purposeHi.size() >= 1 && data.purposeHi.size() <= 2000 &&
+             data.purposeQuote is string && data.purposeQuote.size() <= 2000 &&
+             data.deadline is string && data.deadline.size() >= 1 && data.deadline.size() <= 500 &&
+             data.deadlineQuote is string && data.deadlineQuote.size() <= 2000 &&
+             data.eligibilityEn is string && data.eligibilityEn.size() >= 1 && data.eligibilityEn.size() <= 2000 &&
+             data.eligibilityHi is string && data.eligibilityHi.size() >= 1 && data.eligibilityHi.size() <= 2000 &&
+             data.eligibilityQuote is string && data.eligibilityQuote.size() <= 2000 &&
+             data.documentsRequired is string && data.documentsRequired.size() <= 3000 &&
+             data.contactDetails is string && data.contactDetails.size() <= 1000 &&
+             data.contactQuote is string && data.contactQuote.size() <= 2000 &&
+             isBoundedStringList(data.checklistEn, 25) &&
+             isBoundedStringList(data.checklistHi, 25) &&
+             isBoundedStringList(data.checklistQuotes, 25) &&
+             isBoundedIntList(data.completedIndices, 25) &&
+             isBoundedStringList(data.flaggedMissingEn, 25) &&
+             isBoundedStringList(data.flaggedMissingHi, 25) &&
+             isBoundedStringList(data.followUpQuestionsEn, 25) &&
+             isBoundedStringList(data.followUpQuestionsHi, 25) &&
+             isBoundedStringList(data.qaEntries, 50) &&
+             data.groundingScore is int && data.groundingScore >= 0 && data.groundingScore <= 100 &&
+             data.modelUsed is string && data.modelUsed.size() >= 1 && data.modelUsed.size() <= 200 &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    match /users/{userId}/notices/{noticeId} {
+      allow get: if isSignedIn() &&
+                    request.auth.uid == userId &&
+                    isValidId(userId) &&
+                    isValidId(noticeId) &&
+                    existing().userId == request.auth.uid;
+
+      allow list: if isSignedIn() &&
+                     request.auth.uid == userId &&
+                     existing().userId == request.auth.uid;
+
+      allow create: if isSignedIn() &&
+                       request.auth.uid == userId &&
+                       isValidId(userId) &&
+                       isValidId(noticeId) &&
+                       incoming().keys().hasAll([
+                         'userId', 'title', 'rawNoticeText', 'purposeEn', 'purposeHi', 'purposeQuote',
+                         'deadline', 'deadlineQuote', 'eligibilityEn', 'eligibilityHi', 'eligibilityQuote',
+                         'documentsRequired', 'contactDetails', 'contactQuote', 'checklistEn', 'checklistHi',
+                         'checklistQuotes', 'completedIndices', 'flaggedMissingEn', 'flaggedMissingHi',
+                         'followUpQuestionsEn', 'followUpQuestionsHi', 'qaEntries', 'groundingScore',
+                         'modelUsed', 'createdAt', 'updatedAt'
+                       ]) &&
+                       incoming().keys().hasOnly([
+                         'userId', 'title', 'rawNoticeText', 'purposeEn', 'purposeHi', 'purposeQuote',
+                         'deadline', 'deadlineQuote', 'eligibilityEn', 'eligibilityHi', 'eligibilityQuote',
+                         'documentsRequired', 'contactDetails', 'contactQuote', 'checklistEn', 'checklistHi',
+                         'checklistQuotes', 'completedIndices', 'flaggedMissingEn', 'flaggedMissingHi',
+                         'followUpQuestionsEn', 'followUpQuestionsHi', 'qaEntries', 'groundingScore',
+                         'modelUsed', 'createdAt', 'updatedAt'
+                       ]) &&
+                       isValidNoticeDocument(incoming());
+
+      allow update: if isSignedIn() &&
+                       isValidNoticeDocument(incoming()) &&
+                       request.auth.uid == userId &&
+                       isValidId(userId) &&
+                       isValidId(noticeId) &&
+                       existing().userId == request.auth.uid &&
+                       incoming().userId == existing().userId &&
+                       incoming().createdAt == existing().createdAt &&
+                       incoming().diff(existing()).affectedKeys().hasOnly([
+                         'title', 'rawNoticeText', 'purposeEn', 'purposeHi', 'purposeQuote',
+                         'deadline', 'deadlineQuote', 'eligibilityEn', 'eligibilityHi', 'eligibilityQuote',
+                         'documentsRequired', 'contactDetails', 'contactQuote', 'checklistEn', 'checklistHi',
+                         'checklistQuotes', 'completedIndices', 'flaggedMissingEn', 'flaggedMissingHi',
+                         'followUpQuestionsEn', 'followUpQuestionsHi', 'qaEntries', 'groundingScore',
+                         'modelUsed', 'updatedAt'
+                       ]);
+
+      allow delete: if isSignedIn() &&
+                       request.auth.uid == userId &&
+                       isValidId(userId) &&
+                       isValidId(noticeId) &&
+                       existing().userId == request.auth.uid;
+    }
+  }
+}

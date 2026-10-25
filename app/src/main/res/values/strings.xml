@@ -1,0 +1,31 @@
+<resources>
+    <string name="app_name">NoticeMate AI</string>
+    <string name="tagline">From Confusing Notices to Clear Actions</string>
+    <string name="ps_badge">PS 02 · ACCESSIBILITY ASSISTANT · GEMMA 4</string>
+    <string name="sign_in_with_google">Sign in with Google</string>
+    <string name="sign_out">Sign Out</string>
+    <string name="auth_headline">Understand. Verify. Act.</string>
+    <string name="auth_subtitle">Transform dense campus circulars and scholarship flyers into source-verified English and Hindi action checklists—with zero hallucinated deadlines or criteria.</string>
+    <string name="step_1_input">1. Input</string>
+    <string name="step_2_extract">2. Extract</string>
+    <string name="step_3_interpret">3. Interpret</string>
+    <string name="step_4_validate">4. Validate</string>
+    <string name="step_5_act">5. Act</string>
+    <string name="upload_photo">Upload Notice Photo</string>
+    <string name="capture_camera">Scan with Camera</string>
+    <string name="load_sample_suite">Ambiguous Notice Test Suite</string>
+    <string name="analyze_notice_cta">Extract &amp; Verify with Gemma 4</string>
+    <string name="save_to_cloud">Save to Cloud</string>
+    <string name="saved_notices_tab">Saved Notices</string>
+    <string name="workspace_tab">Notice Analyzer</string>
+    <string name="test_suite_tab">Test Suite</string>
+    <string name="listen_english">Listen (EN)</string>
+    <string name="listen_hindi">सुनें (हिंदी)</string>
+    <string name="stop_audio">Stop Audio</string>
+    <string name="export_calendar">Add Deadline to Calendar</string>
+    <string name="ask_grounded_question">Ask a Grounded Question</string>
+    <string name="settings_debug_logs_title">Debug Logs</string>
+    <string name="settings_debug_logs_subtitle">View runtime logs for PDF, OCR &amp; AI</string>
+    <string name="copy_debug_logs">Copy Logs</string>
+    <string name="clear_debug_logs">Clear Logs</string>
+</resources>
