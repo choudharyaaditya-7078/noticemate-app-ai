@@ -77,6 +77,28 @@ tasks.withType<Test> {
   testLogging { events("passed", "failed", "skipped") }
 }
 
+val generatedDebugApkFile = layout.buildDirectory.file("outputs/apk/debug/app-debug.apk").get().asFile
+val exportedApkTargets = listOf(
+  rootProject.file("apk/app-debug.apk"),
+  rootProject.file("public/app-debug.apk"),
+  rootProject.file(".build-outputs/app-debug.apk")
+)
+
+tasks.configureEach {
+  if (name == "packageDebug" || name == "assembleDebug") {
+    val sourceApk = generatedDebugApkFile
+    val targets = exportedApkTargets
+    doLast {
+      if (sourceApk.exists()) {
+        targets.forEach { target ->
+          target.parentFile?.mkdirs()
+          sourceApk.copyTo(target, overwrite = true)
+        }
+      }
+    }
+  }
+}
+
 // Configure the Secrets Gradle Plugin to use .env and .env.example files
 // to match the convention used in Web projects.
 secrets {

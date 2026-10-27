@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">NoticeMate AI</string>
+    <string name="app_name">NoticeBuddy</string>
     <string name="tagline">From Confusing Notices to Clear Actions</string>
     <string name="ps_badge">PS 02 · ACCESSIBILITY ASSISTANT · GEMMA 4</string>
     <string name="sign_in_with_google">Sign in with Google</string>

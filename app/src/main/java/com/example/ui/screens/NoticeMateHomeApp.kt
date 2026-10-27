@@ -15,7 +15,9 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -23,6 +25,8 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
@@ -41,6 +45,7 @@ import androidx.compose.material.icons.automirrored.filled.FormatListBulleted
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.CalendarMonth
+import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Checklist
 import androidx.compose.material.icons.filled.DarkMode
@@ -78,11 +83,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.local.AppDiagnosticLogger
 import com.example.data.local.AppThemeMode
@@ -93,14 +101,24 @@ import com.example.data.local.RecentNoticeEntry
 import com.example.data.local.RecentNoticeStorage
 import com.example.data.model.NoticeDescriptionResult
 import com.example.data.model.NoticeLanguage
+import com.example.data.model.NoticeRequestError
+import com.example.data.model.NoticeRequestErrorCategory
+import com.example.data.model.NoticeValidationGateResult
+import com.example.data.model.NoticeValidationStatus
 import com.example.data.model.PdfExtractionResult
+import com.example.data.remote.NetworkConnectivityStatus
+import com.example.ui.camera.NoticeBuddyCameraScannerScreen
 import com.example.ui.components.BokehGlassBackground
 import com.example.ui.components.GlassButton
 import com.example.ui.components.GlassCard
 import com.example.ui.components.GlassIconBadge
 import com.example.ui.components.GlassModalDialog
 import com.example.ui.components.LiquidLanguageTogglePill
+import com.example.ui.components.NoticeBuddyAccentPill
+import com.example.ui.components.NoticeBuddyActionCard
 import com.example.ui.theme.LocalGlassPalette
+import com.example.ui.theme.LocalNoticeBuddyRadius
+import com.example.ui.theme.LocalNoticeBuddySpacing
 import com.example.ui.theme.NoticeMateTheme
 import com.example.ui.viewmodel.HomePhaseUiState
 import com.example.ui.viewmodel.HomePhaseViewModel
@@ -113,7 +131,9 @@ import java.util.Locale
 
 @Composable
 fun NoticeMateHomeApp(
-    viewModel: HomePhaseViewModel
+    viewModel: HomePhaseViewModel,
+    enableHardwareCameraBinding: Boolean = true,
+    customCameraCaptureTrigger: (() -> Unit)? = null
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
@@ -169,6 +189,22 @@ fun NoticeMateHomeApp(
                     onBackClick = { viewModel.navigateBack() },
                     onProfileClick = { viewModel.toggleProfileMenu() }
                 )
+
+                // Phase 6 Non-Intrusive Connectivity Banner (startup offline & live connectivity changes)
+                if (!uiState.networkStatus.hasInternetAccess) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 20.dp)
+                            .padding(bottom = 8.dp)
+                    ) {
+                        NetworkConnectivityBanner(
+                            networkStatus = uiState.networkStatus,
+                            selectedLanguage = uiState.selectedLanguage,
+                            onRefreshConnectivity = { viewModel.refreshNetworkConnectivity() }
+                        )
+                    }
+                }
 
                 // Main Content Area
                 Box(
@@ -234,6 +270,9 @@ fun NoticeMateHomeApp(
                             isProcessing = uiState.isProcessing,
                             processingStageMessage = uiState.processingStageMessage,
                             analysisError = uiState.analysisError,
+                            requestError = uiState.requestError,
+                            networkStatus = uiState.networkStatus,
+                            validationGateResult = uiState.validationGateResult,
                             onRetryAnalysis = { viewModel.retryCurrentNoticeAnalysis() },
                             onDeleteCurrentNotice = {
                                 uiState.activeConfirmedEntry?.id?.let { id ->
@@ -272,6 +311,9 @@ fun NoticeMateHomeApp(
                             isProcessing = uiState.isProcessing,
                             processingStageMessage = uiState.processingStageMessage,
                             analysisError = uiState.analysisError,
+                            requestError = uiState.requestError,
+                            networkStatus = uiState.networkStatus,
+                            validationGateResult = uiState.validationGateResult,
                             extractionResult = uiState.lastPdfExtractionResult,
                             onRetryAnalysis = { viewModel.retryCurrentNoticeAnalysis() },
                             onDeleteCurrentNotice = {
@@ -296,12 +338,57 @@ fun NoticeMateHomeApp(
                             onViewSavedDescription = {
                                 viewModel.navigateTo(NoticeAppRoute.UPLOAD_IMAGE_CONFIRMATION)
                             },
+                            onOpenCameraScanner = {
+                                viewModel.openCameraScanner()
+                            },
                             onLaunchImagePicker = {
                                 imagePickerLauncher.launch(arrayOf("image/*"))
                             },
                             onRemoveImage = viewModel::removeSelectedImage,
                             onContinue = { viewModel.submitSelectedImage() },
                             onBackHome = { viewModel.onHomeButtonClicked() }
+                        )
+
+                        NoticeAppRoute.SCAN_NOTICE_CAMERA -> NoticeBuddyCameraScannerScreen(
+                            cameraState = uiState.cameraScanState,
+                            selectedLanguage = uiState.selectedLanguage,
+                            onPermissionChecked = viewModel::onCameraPermissionChecked,
+                            onPermissionResult = viewModel::onCameraPermissionResult,
+                            onCameraInitializing = viewModel::onCameraPreviewInitializing,
+                            onCameraBound = viewModel::onCameraPreviewBound,
+                            onCameraUnbound = viewModel::onCameraPreviewUnbound,
+                            onCameraError = viewModel::onCameraError,
+                            onRetryCamera = viewModel::retryCameraInitialization,
+                            onToggleFlash = { viewModel.toggleCameraFlash() },
+                            onToggleAutoCapture = { viewModel.toggleAutoCapture() },
+                            onSwitchLens = viewModel::switchCameraLens,
+                            onDeviceRotationChanged = viewModel::onDeviceRotationChanged,
+                            onFrameAnalyzed = viewModel::onPreviewFrameAnalyzed,
+                            onManualCaptureStarted = viewModel::onManualCaptureStarted,
+                            onPhotoCaptured = { bitmap, rotationDegrees ->
+                                viewModel.onManualCaptureSucceeded(bitmap, rotationDegrees)
+                            },
+                            onCaptureFailed = viewModel::onManualCaptureFailed,
+                            onRetakePhoto = viewModel::onRetakeCapturedPhoto,
+                            onAcceptPhoto = { viewModel.onAcceptCapturedPhoto() },
+                            onAddAnotherPage = viewModel::onStartAddAnotherPage,
+                            onReturnToReview = viewModel::onReturnToMultiPageReview,
+                            onSelectPage = viewModel::onSelectScannedPage,
+                            onRemovePage = viewModel::onRemoveScannedPage,
+                            onMovePageEarlier = viewModel::onMoveScannedPageEarlier,
+                            onMovePageLater = viewModel::onMoveScannedPageLater,
+                            onRotateClockwise = viewModel::onRotateSelectedPageClockwise,
+                            onRotateCounterClockwise = viewModel::onRotateSelectedPageCounterClockwise,
+                            onToggleCrop = viewModel::onToggleCropSelectedPage,
+                            onTogglePerspective = viewModel::onTogglePerspectiveCorrectionSelectedPage,
+                            onResetPageEdits = viewModel::onResetSelectedPageEdits,
+                            onRunOcrCheck = viewModel::onRunOcrCheckOnSelectedPage,
+                            onOpenGallery = {
+                                imagePickerLauncher.launch(arrayOf("image/*"))
+                            },
+                            onClose = { viewModel.navigateBack() },
+                            enableHardwareCameraBinding = enableHardwareCameraBinding,
+                            customCaptureTrigger = customCameraCaptureTrigger
                         )
 
                         NoticeAppRoute.UPLOAD_IMAGE_CONFIRMATION -> ImageConfirmationScreen(
@@ -311,6 +398,9 @@ fun NoticeMateHomeApp(
                             isProcessing = uiState.isProcessing,
                             processingStageMessage = uiState.processingStageMessage,
                             analysisError = uiState.analysisError,
+                            requestError = uiState.requestError,
+                            networkStatus = uiState.networkStatus,
+                            validationGateResult = uiState.validationGateResult,
                             onRetryAnalysis = { viewModel.retryCurrentNoticeAnalysis() },
                             onDeleteCurrentNotice = {
                                 uiState.activeConfirmedEntry?.id?.let { id ->
@@ -352,11 +442,19 @@ fun NoticeMateHomeApp(
                     }
                 }
 
-                // Bottom Liquid Glass Home Dock
-                BottomGlassHomeBar(
-                    isHomeActive = uiState.currentRoute == NoticeAppRoute.HOME,
-                    onHomeClick = { viewModel.onHomeButtonClicked() }
-                )
+                // Bottom Liquid Glass Home Dock (hidden on notice-analysis confirmation screens
+                // and full-screen camera scanner which provide their own dedicated bottom controls)
+                val hideBottomHomeDock =
+                    uiState.currentRoute == NoticeAppRoute.ENTER_TEXT_CONFIRMATION ||
+                        uiState.currentRoute == NoticeAppRoute.UPLOAD_PDF_CONFIRMATION ||
+                        uiState.currentRoute == NoticeAppRoute.UPLOAD_IMAGE_CONFIRMATION ||
+                        uiState.currentRoute == NoticeAppRoute.SCAN_NOTICE_CAMERA
+                if (!hideBottomHomeDock) {
+                    BottomGlassHomeBar(
+                        isHomeActive = uiState.currentRoute == NoticeAppRoute.HOME,
+                        onHomeClick = { viewModel.onHomeButtonClicked() }
+                    )
+                }
             }
 
             // Glassmorphic Profile Menu Modal
@@ -381,7 +479,7 @@ fun NoticeMateHomeApp(
                                 color = glass.textPrimary
                             )
                             Text(
-                                text = "NoticeMate AI Preferences",
+                                text = "NoticeBuddy Preferences",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = glass.textSecondary
                             )
@@ -413,38 +511,40 @@ private fun TopGlassHeader(
     onProfileClick: () -> Unit
 ) {
     val glass = LocalGlassPalette.current
+    val spacing = LocalNoticeBuddySpacing.current
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 20.dp, vertical = 14.dp),
+            .padding(horizontal = spacing.screenHorizontal, vertical = spacing.screenVertical),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
+            horizontalArrangement = Arrangement.spacedBy(spacing.sm)
         ) {
             if (currentRoute != NoticeAppRoute.HOME) {
                 GlassIconBadge(
                     icon = Icons.AutoMirrored.Filled.ArrowBack,
                     contentDescription = "Back",
-                    size = 44.dp,
+                    size = spacing.minTouchTarget,
+                    accentTint = glass.accentGlow,
                     onClick = onBackClick,
                     modifier = Modifier.testTag("top_back_button")
                 )
             } else {
                 GlassIconBadge(
                     icon = Icons.Default.AutoAwesome,
-                    contentDescription = "NoticeMate Liquid Glass",
-                    size = 44.dp,
-                    accentTint = glass.secondaryGlow
+                    contentDescription = "NoticeBuddy",
+                    size = 46.dp,
+                    accentTint = glass.accentGlow
                 )
             }
             Column {
                 Text(
-                    text = "NoticeMate AI",
+                    text = "NoticeBuddy",
                     style = MaterialTheme.typography.headlineSmall,
-                    fontWeight = FontWeight.ExtraBold,
+                    fontWeight = FontWeight.Bold,
                     color = glass.textPrimary,
                     modifier = Modifier.testTag("app_header_title")
                 )
@@ -459,7 +559,8 @@ private fun TopGlassHeader(
         GlassIconBadge(
             icon = Icons.Default.Person,
             contentDescription = "Profile",
-            size = 48.dp,
+            size = spacing.minTouchTarget,
+            accentTint = glass.lavenderAccent,
             onClick = onProfileClick,
             modifier = Modifier.testTag("profile_icon_button")
         )
@@ -467,9 +568,10 @@ private fun TopGlassHeader(
 }
 
 /**
- * Ultra-Minimal Liquid Glass Home Screen:
- * Contains ONLY the 3 separate input buttons (PDF, Image, Text) and the Recent Notices button.
- * Does NOT clutter the home screen with an inline recent notices list.
+ * NoticeBuddy Home Screen (Phase 2 Design System Showcase):
+ * Demonstrates the centralized NoticeBuddy design system with soft sky-blue & pastel background,
+ * crisp white translucent glassmorphism cards, electric-blue primary actions, and subtle
+ * lavender, pink, and teal accents while preserving all existing actions and testTags.
  */
 @Composable
 private fun HomepageView(
@@ -480,6 +582,8 @@ private fun HomepageView(
     onOpenRecentNoticesClick: () -> Unit
 ) {
     val glass = LocalGlassPalette.current
+    val spacing = LocalNoticeBuddySpacing.current
+    val radius = LocalNoticeBuddyRadius.current
     val savedCount = uiState.recentNotices.size
     val scrollState = rememberScrollState()
 
@@ -487,174 +591,107 @@ private fun HomepageView(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(scrollState)
+            .padding(vertical = spacing.xxs)
             .testTag("homepage_root"),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
+        verticalArrangement = Arrangement.spacedBy(spacing.cardSpacing)
     ) {
-        // Live Liquid Glass Quick-Glance Hero Widget
+        // Quick-Glance Glassmorphic Hero Banner
         GlassCard(
-            cornerRadius = 22.dp,
-            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+            elevated = true,
+            cornerRadius = radius.heroCard,
+            contentPadding = PaddingValues(horizontal = spacing.cardPadding, vertical = 16.dp),
             modifier = Modifier.fillMaxWidth()
         ) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                horizontalArrangement = Arrangement.spacedBy(spacing.xs)
             ) {
-                Box(
-                    modifier = Modifier
-                        .size(10.dp)
-                        .clip(CircleShape)
-                        .background(Color(0xFF34D399))
+                NoticeBuddyAccentPill(
+                    text = "AI Grounded Summary",
+                    accentColor = glass.accentGlow,
+                    backgroundColor = Color(0xFFDBEAFE),
+                    leadingDotColor = glass.tealAccent
                 )
-                Text(
-                    text = "Upload any PDF, photo, or text notice for an instant, easy summary.",
-                    style = MaterialTheme.typography.bodySmall,
-                    fontWeight = FontWeight.Medium,
-                    color = glass.textPrimary
+                NoticeBuddyAccentPill(
+                    text = "EN • हिंदी",
+                    accentColor = glass.lavenderAccent,
+                    backgroundColor = glass.lavenderSoft
                 )
             }
+            Spacer(modifier = Modifier.height(spacing.sm))
+            Text(
+                text = "Turn official notices into clear action steps",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                color = glass.textPrimary
+            )
+            Spacer(modifier = Modifier.height(spacing.xxs))
+            Text(
+                text = "Upload any PDF, photo, or text notice for an instant, easy summary.",
+                style = MaterialTheme.typography.bodySmall,
+                color = glass.textSecondary
+            )
         }
 
-        // Button 1: Upload Notice PDF (supports both text PDFs and scanned image PDFs)
-        LiquidHomeActionTile(
+        // Action 1: Upload Notice PDF (Electric-Blue Primary Accent)
+        NoticeBuddyActionCard(
             title = "Upload Notice PDF",
             subtitle = "Read any PDF notice or scanned circular",
             icon = Icons.Default.PictureAsPdf,
             accentColor = glass.accentGlow,
+            badgeText = "PDF & Scanned OCR",
+            badgeBackgroundColor = Color(0xFFDBEAFE),
             onClick = onUploadNoticePdfClick,
             modifier = Modifier
                 .fillMaxWidth()
                 .testTag("upload_notice_pdf_button")
         )
 
-        // Button 2: Upload Notice Image (direct photo or screenshot of a notice)
-        LiquidHomeActionTile(
+        // Action 2: Upload Notice Image (Subtle Pastel Pink Accent)
+        NoticeBuddyActionCard(
             title = "Upload Notice Image",
             subtitle = "Pick a photo or screenshot of a notice",
             icon = Icons.Default.Image,
-            accentColor = glass.secondaryGlow,
+            accentColor = glass.pinkAccent,
+            badgeText = "Photo & Screenshot",
+            badgeBackgroundColor = glass.pinkSoft,
             onClick = onUploadNoticeImageClick,
             modifier = Modifier
                 .fillMaxWidth()
                 .testTag("upload_notice_image_button")
         )
 
-        // Button 3: Enter Notice Text
-        LiquidHomeActionTile(
+        // Action 3: Enter Notice Text (Subtle Teal Accent)
+        NoticeBuddyActionCard(
             title = "Enter Notice Text",
             subtitle = "Paste or type notice text directly",
             icon = Icons.Default.EditNote,
-            accentColor = Color(0xFF34D399),
+            accentColor = glass.tealAccent,
+            badgeText = "Direct Text",
+            badgeBackgroundColor = glass.tealSoft,
             onClick = onEnterNoticeTextClick,
             modifier = Modifier
                 .fillMaxWidth()
                 .testTag("enter_notice_text_button")
         )
 
-        Spacer(modifier = Modifier.height(4.dp))
-
-        // Dedicated Recent Notices Button (opens separate Recent Notices Screen)
-        GlassCard(
-            elevated = false,
-            cornerRadius = 22.dp,
+        // Action 4: Dedicated Recent Notices Card (Subtle Lavender Accent)
+        NoticeBuddyActionCard(
+            title = if (savedCount > 0) "Recent Notices ($savedCount)" else "Recent Notices",
+            subtitle = if (savedCount > 0) {
+                "Tap to view or delete saved notices"
+            } else {
+                "No saved notices yet"
+            },
+            icon = Icons.Default.History,
+            accentColor = glass.lavenderAccent,
+            badgeText = if (savedCount > 0) "$savedCount Saved" else "History",
+            badgeBackgroundColor = glass.lavenderSoft,
             onClick = onOpenRecentNoticesClick,
-            contentPadding = PaddingValues(horizontal = 18.dp, vertical = 16.dp),
             modifier = Modifier
                 .fillMaxWidth()
                 .testTag("open_recent_notices_button")
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(14.dp)
-                ) {
-                    GlassIconBadge(
-                        icon = Icons.Default.History,
-                        contentDescription = "Recent Notices",
-                        size = 44.dp,
-                        accentTint = glass.accentGlow
-                    )
-                    Column {
-                        Text(
-                            text = if (savedCount > 0) "Recent Notices ($savedCount)" else "Recent Notices",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = glass.textPrimary
-                        )
-                        Text(
-                            text = if (savedCount > 0) {
-                                "Tap to view or delete saved notices"
-                            } else {
-                                "No saved notices yet"
-                            },
-                            style = MaterialTheme.typography.bodySmall,
-                            color = glass.textSecondary
-                        )
-                    }
-                }
-
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                    contentDescription = "Open Recent Notices",
-                    tint = glass.textPrimary
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun LiquidHomeActionTile(
-    title: String,
-    subtitle: String,
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    accentColor: Color,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    val glass = LocalGlassPalette.current
-    GlassCard(
-        elevated = true,
-        cornerRadius = 24.dp,
-        onClick = onClick,
-        contentPadding = PaddingValues(horizontal = 18.dp, vertical = 18.dp),
-        modifier = modifier
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(16.dp)
-        ) {
-            GlassIconBadge(
-                icon = icon,
-                contentDescription = title,
-                size = 52.dp,
-                accentTint = accentColor
-            )
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = title,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.ExtraBold,
-                    color = glass.textPrimary
-                )
-                Spacer(modifier = Modifier.height(3.dp))
-                Text(
-                    text = subtitle,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = glass.textSecondary
-                )
-            }
-            Icon(
-                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                contentDescription = null,
-                tint = glass.textSecondary
-            )
-        }
+        )
     }
 }
 
@@ -986,129 +1023,154 @@ private fun NoticeTextConfirmationScreen(
     isProcessing: Boolean,
     processingStageMessage: String?,
     analysisError: String?,
+    requestError: NoticeRequestError? = null,
+    networkStatus: NetworkConnectivityStatus = NetworkConnectivityStatus.ONLINE,
+    validationGateResult: NoticeValidationGateResult? = null,
     onRetryAnalysis: () -> Unit,
     onDeleteCurrentNotice: () -> Unit,
     onEditNotice: () -> Unit,
     onBackHome: () -> Unit
 ) {
     val glass = LocalGlassPalette.current
+    val radius = LocalNoticeBuddyRadius.current
     val displayedText = entry?.textContent?.ifBlank { draftText } ?: draftText
     val fallbackTitle = entry?.title ?: RecentNoticeStorage.deriveTitleFromNoticeText(displayedText)
     val description = entry?.descriptionResult
     val displayedTitle = description?.displayTitle(selectedLanguage, fallbackTitle) ?: fallbackTitle
-    val scrollState = rememberScrollState()
     var showOriginalText by remember { mutableStateOf(false) }
+    val isHindi = selectedLanguage == NoticeLanguage.HINDI
+    val isGateBlocked = validationGateResult != null &&
+        !validationGateResult.isAllowedForNoticeAnalysis &&
+        validationGateResult.status != NoticeValidationStatus.CLASSIFICATION_ERROR
 
-    GlassCard(
-        elevated = true,
-        modifier = Modifier
-            .fillMaxSize()
-            .testTag("notice_text_confirmation_screen")
+    NoticeAnalysisScreenScaffold(
+        screenTestTag = "notice_text_confirmation_screen",
+        sourceBadgeLabel = if (isHindi) "टेक्स्ट नोटिस" else "Text Notice",
+        sourceBadgeColor = glass.tealAccent,
+        sourceBadgeBackground = glass.tealSoft,
+        title = displayedTitle,
+        selectedLanguage = selectedLanguage,
+        onSelectLanguage = onSelectLanguage,
+        canDelete = entry != null && !isProcessing,
+        onDelete = onDeleteCurrentNotice,
+        isProcessing = isProcessing,
+        secondaryActionText = "Edit Text",
+        secondaryActionIcon = Icons.Default.EditNote,
+        secondaryActionTestTag = "edit_notice_text_button",
+        onSecondaryAction = onEditNotice,
+        primaryActionText = "Done",
+        primaryActionTestTag = "confirm_return_home_button",
+        onPrimaryAction = onBackHome
     ) {
-        NoticeResultHeaderBar(
-            title = displayedTitle,
-            selectedLanguage = selectedLanguage,
-            onSelectLanguage = onSelectLanguage,
-            canDelete = entry != null && !isProcessing,
-            onDelete = onDeleteCurrentNotice
-        )
-
-        Spacer(modifier = Modifier.height(12.dp))
-
-        Column(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth()
-                .verticalScroll(scrollState),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            if (isProcessing) {
-                AnalysisLoadingCard(
-                    message = processingStageMessage ?: "Summarizing notice in simple words..."
-                )
-            }
-
-            if (analysisError != null && !isProcessing) {
-                AnalysisErrorCard(
-                    errorMessage = analysisError,
-                    onRetry = onRetryAnalysis
-                )
-            }
-
-            if (description != null) {
-                SimplifiedNoticeResultSection(
-                    description = description,
-                    selectedLanguage = selectedLanguage
-                )
-            }
-
-            // Clean collapsible Original Text section (also exposes confirmed_notice_text_body)
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(glass.glassSurface)
-                    .border(1.dp, glass.glassBorder.copy(alpha = 0.4f), RoundedCornerShape(16.dp))
-                    .clickable { showOriginalText = !showOriginalText }
-                    .padding(14.dp)
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = if (selectedLanguage == NoticeLanguage.HINDI) {
-                            "मूल नोटिस टेक्स्ट (Original Notice Text)"
-                        } else {
-                            "Original Notice Text"
-                        },
-                        style = MaterialTheme.typography.labelMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = glass.accentGlow
-                    )
-                    Text(
-                        text = if (showOriginalText) "Hide" else "Show",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = glass.textSecondary
-                    )
-                }
-                if (showOriginalText || description == null) {
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Text(
-                        text = displayedText,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = glass.textPrimary,
-                        modifier = Modifier.testTag("confirmed_notice_text_body")
-                    )
-                }
-            }
+        if (isProcessing) {
+            AnalysisLoadingCard(
+                message = processingStageMessage ?: "Summarizing notice in simple words...",
+                selectedLanguage = selectedLanguage
+            )
         }
 
-        Spacer(modifier = Modifier.height(14.dp))
+        if (isGateBlocked && !isProcessing) {
+            NoticeValidationGateCard(
+                gateResult = validationGateResult!!,
+                selectedLanguage = selectedLanguage,
+                chooseAnotherText = if (isHindi) "दूसरा नोटिस दर्ज करें" else "Enter Another Notice",
+                onChooseAnother = onEditNotice
+            )
+        }
 
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        if (analysisError != null && !isProcessing && !isGateBlocked) {
+            AnalysisErrorCard(
+                errorMessage = analysisError,
+                requestError = requestError,
+                networkStatus = networkStatus,
+                hasPreservedResult = description != null,
+                selectedLanguage = selectedLanguage,
+                onRetry = onRetryAnalysis
+            )
+        }
+
+        if (!isProcessing && analysisError == null && !isGateBlocked && description == null) {
+            AnalysisEmptyStateCard(
+                selectedLanguage = selectedLanguage,
+                onRetry = onRetryAnalysis
+            )
+        }
+
+        if (description != null) {
+            SimplifiedNoticeResultSection(
+                description = description,
+                selectedLanguage = selectedLanguage
+            )
+        }
+
+        // Collapsible Original Notice Text Card (preserves confirmed_notice_text_body)
+        GlassCard(
+            cornerRadius = radius.innerCard,
+            contentPadding = PaddingValues(16.dp),
+            modifier = Modifier.fillMaxWidth()
         ) {
-            GlassButton(
-                text = "Edit Text",
-                isPrimary = false,
-                enabled = !isProcessing,
-                onClick = onEditNotice,
+            Row(
                 modifier = Modifier
-                    .weight(1f)
-                    .testTag("edit_notice_text_button")
-            )
-            GlassButton(
-                text = "Done",
-                isPrimary = true,
-                enabled = !isProcessing,
-                onClick = onBackHome,
-                modifier = Modifier
-                    .weight(1f)
-                    .testTag("confirm_return_home_button")
-            )
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(10.dp))
+                    .clickable { showOriginalText = !showOriginalText }
+                    .testTag("original_notice_text_toggle_row"),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    GlassIconBadge(
+                        icon = Icons.Default.Description,
+                        contentDescription = null,
+                        size = 36.dp,
+                        accentTint = glass.tealAccent
+                    )
+                    Column {
+                        Text(
+                            text = if (isHindi) {
+                                "मूल नोटिस टेक्स्ट (Original Notice Text)"
+                            } else {
+                                "Original Notice Text"
+                            },
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = glass.textPrimary
+                        )
+                        Text(
+                            text = if (showOriginalText || description == null) {
+                                if (isHindi) "छुपाने के लिए टैप करें" else "Tap to collapse source text"
+                            } else {
+                                if (isHindi) "पूरा मूल टेक्स्ट देखने के लिए टैप करें" else "Tap to view full source text"
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                            color = glass.textSecondary
+                        )
+                    }
+                }
+                NoticeBuddyAccentPill(
+                    text = if (showOriginalText || description == null) "Hide" else "Show",
+                    accentColor = glass.tealAccent,
+                    backgroundColor = glass.tealSoft
+                )
+            }
+            if (showOriginalText || description == null) {
+                Spacer(modifier = Modifier.height(10.dp))
+                HorizontalDivider(color = glass.glassBorder.copy(alpha = 0.45f))
+                Spacer(modifier = Modifier.height(10.dp))
+                Text(
+                    text = displayedText,
+                    style = MaterialTheme.typography.bodyMedium,
+                    lineHeight = 22.sp,
+                    color = glass.textPrimary,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("confirmed_notice_text_body")
+                )
+            }
         }
     }
 }
@@ -1312,6 +1374,9 @@ private fun PdfConfirmationScreen(
     isProcessing: Boolean,
     processingStageMessage: String?,
     analysisError: String?,
+    requestError: NoticeRequestError? = null,
+    networkStatus: NetworkConnectivityStatus = NetworkConnectivityStatus.ONLINE,
+    validationGateResult: NoticeValidationGateResult? = null,
     extractionResult: PdfExtractionResult?,
     onRetryAnalysis: () -> Unit,
     onDeleteCurrentNotice: () -> Unit,
@@ -1319,107 +1384,132 @@ private fun PdfConfirmationScreen(
     onBackHome: () -> Unit
 ) {
     val glass = LocalGlassPalette.current
+    val radius = LocalNoticeBuddyRadius.current
     val fileName = entry?.pdfFileName?.ifBlank { entry.title } ?: "Selected_Notice.pdf"
     val description = entry?.descriptionResult
     val displayedTitle = description?.displayTitle(selectedLanguage, fileName) ?: fileName
-    val scrollState = rememberScrollState()
+    val isHindi = selectedLanguage == NoticeLanguage.HINDI
+    val isGateBlocked = validationGateResult != null &&
+        !validationGateResult.isAllowedForNoticeAnalysis &&
+        validationGateResult.status != NoticeValidationStatus.CLASSIFICATION_ERROR
 
-    GlassCard(
-        elevated = true,
-        modifier = Modifier
-            .fillMaxSize()
-            .testTag("pdf_confirmation_screen")
+    NoticeAnalysisScreenScaffold(
+        screenTestTag = "pdf_confirmation_screen",
+        sourceBadgeLabel = if (isHindi) "पीडीएफ नोटिस" else "PDF Notice",
+        sourceBadgeColor = glass.electricBlue,
+        sourceBadgeBackground = glass.electricBlueSoft,
+        title = displayedTitle,
+        selectedLanguage = selectedLanguage,
+        onSelectLanguage = onSelectLanguage,
+        canDelete = entry != null && !isProcessing,
+        onDelete = onDeleteCurrentNotice,
+        isProcessing = isProcessing,
+        secondaryActionText = "Another PDF",
+        secondaryActionIcon = Icons.Default.PictureAsPdf,
+        secondaryActionTestTag = "another_pdf_button",
+        onSecondaryAction = onSelectAnotherPdf,
+        primaryActionText = "Done",
+        primaryActionTestTag = "pdf_confirm_return_home_button",
+        onPrimaryAction = onBackHome
     ) {
-        NoticeResultHeaderBar(
-            title = displayedTitle,
-            selectedLanguage = selectedLanguage,
-            onSelectLanguage = onSelectLanguage,
-            canDelete = entry != null && !isProcessing,
-            onDelete = onDeleteCurrentNotice
-        )
+        if (isProcessing) {
+            AnalysisLoadingCard(
+                message = processingStageMessage ?: "Reading PDF pages and generating simple summary...",
+                selectedLanguage = selectedLanguage
+            )
+        }
 
-        Spacer(modifier = Modifier.height(12.dp))
+        if (isGateBlocked && !isProcessing) {
+            NoticeValidationGateCard(
+                gateResult = validationGateResult!!,
+                selectedLanguage = selectedLanguage,
+                chooseAnotherText = if (isHindi) "दूसरा पीडीएफ चुनें" else "Choose Another PDF",
+                onChooseAnother = onSelectAnotherPdf
+            )
+        }
 
-        Column(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth()
-                .verticalScroll(scrollState),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+        if (analysisError != null && !isProcessing && !isGateBlocked) {
+            AnalysisErrorCard(
+                errorMessage = analysisError,
+                requestError = requestError,
+                networkStatus = networkStatus,
+                hasPreservedResult = description != null,
+                selectedLanguage = selectedLanguage,
+                onRetry = onRetryAnalysis
+            )
+        }
+
+        if (!isProcessing && analysisError == null && !isGateBlocked && description == null) {
+            AnalysisEmptyStateCard(
+                selectedLanguage = selectedLanguage,
+                onRetry = onRetryAnalysis
+            )
+        }
+
+        if (description != null) {
+            SimplifiedNoticeResultSection(
+                description = description,
+                selectedLanguage = selectedLanguage
+            )
+        }
+
+        // Source PDF Document Metadata Card
+        GlassCard(
+            cornerRadius = radius.innerCard,
+            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+            modifier = Modifier.fillMaxWidth()
         ) {
-            if (isProcessing) {
-                AnalysisLoadingCard(
-                    message = processingStageMessage ?: "Reading PDF pages and generating simple summary..."
-                )
-            }
-
-            if (analysisError != null && !isProcessing) {
-                AnalysisErrorCard(
-                    errorMessage = analysisError,
-                    onRetry = onRetryAnalysis
-                )
-            }
-
-            if (description != null) {
-                SimplifiedNoticeResultSection(
-                    description = description,
-                    selectedLanguage = selectedLanguage
-                )
-            }
-
-            // Minimal file footer chip
             Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(14.dp))
-                    .background(glass.glassSurface)
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Text(
-                    text = fileName,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = glass.textSecondary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier
-                        .weight(1f)
-                        .testTag("confirmed_pdf_filename")
-                )
-                if (extractionResult != null) {
-                    Text(
-                        text = "${extractionResult.processedPageCount}p",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = glass.accentGlow,
-                        modifier = Modifier.testTag("pdf_extraction_summary")
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    GlassIconBadge(
+                        icon = Icons.Default.PictureAsPdf,
+                        contentDescription = null,
+                        size = 34.dp,
+                        accentTint = glass.electricBlue
                     )
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = if (isHindi) "स्रोत पीडीएफ फ़ाइल" else "Source PDF Document",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = glass.textSecondary
+                        )
+                        Text(
+                            text = fileName,
+                            style = MaterialTheme.typography.bodySmall,
+                            fontWeight = FontWeight.SemiBold,
+                            color = glass.textPrimary,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.testTag("confirmed_pdf_filename")
+                        )
+                    }
+                }
+                if (extractionResult != null) {
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(glass.electricBlueSoft)
+                            .padding(horizontal = 10.dp, vertical = 4.dp)
+                    ) {
+                        Text(
+                            text = "${extractionResult.processedPageCount}p",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = glass.electricBlue,
+                            modifier = Modifier.testTag("pdf_extraction_summary")
+                        )
+                    }
                 }
             }
-        }
-
-        Spacer(modifier = Modifier.height(14.dp))
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            GlassButton(
-                text = "Another PDF",
-                isPrimary = false,
-                enabled = !isProcessing,
-                onClick = onSelectAnotherPdf,
-                modifier = Modifier.weight(1f)
-            )
-            GlassButton(
-                text = "Done",
-                isPrimary = true,
-                enabled = !isProcessing,
-                onClick = onBackHome,
-                modifier = Modifier
-                    .weight(1f)
-                    .testTag("pdf_confirm_return_home_button")
-            )
         }
     }
 }
@@ -1431,6 +1521,7 @@ private fun UploadNoticeImageScreen(
     isProcessing: Boolean,
     savedDescriptionAvailable: Boolean,
     onViewSavedDescription: () -> Unit,
+    onOpenCameraScanner: () -> Unit,
     onLaunchImagePicker: () -> Unit,
     onRemoveImage: () -> Unit,
     onContinue: () -> Unit,
@@ -1445,54 +1536,78 @@ private fun UploadNoticeImageScreen(
             .testTag("upload_notice_image_screen")
     ) {
         Text(
-            text = "Upload Notice Image",
+            text = "Scan or Upload Notice Image",
             style = MaterialTheme.typography.headlineSmall,
             fontWeight = FontWeight.Bold,
             color = glass.textPrimary
         )
         Spacer(modifier = Modifier.height(4.dp))
         Text(
-            text = "Select a photo or screenshot of any notice from your phone.",
+            text = "Scan a physical notice with your camera or choose a photo from your gallery.",
             style = MaterialTheme.typography.bodySmall,
             color = glass.textSecondary
         )
 
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(14.dp))
 
         if (selectedImage == null) {
-            Box(
+            Column(
                 modifier = Modifier
                     .weight(1f)
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(22.dp))
-                    .background(glass.glassSurface)
-                    .border(1.4.dp, glass.glassBorder, RoundedCornerShape(22.dp))
-                    .clickable(enabled = !isProcessing, onClick = onLaunchImagePicker)
-                    .padding(24.dp)
-                    .testTag("select_image_dropzone"),
-                contentAlignment = Alignment.Center
+                    .fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                // Primary Camera Scanner Action Card
+                NoticeBuddyActionCard(
+                    title = "Scan Notice with Camera",
+                    subtitle = "Capture a physical notice board or circular",
+                    icon = Icons.Default.CameraAlt,
+                    accentColor = glass.electricBlue,
+                    badgeText = "Live CameraX",
+                    badgeBackgroundColor = glass.electricBlueSoft,
+                    onClick = {
+                        if (!isProcessing) onOpenCameraScanner()
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("open_camera_scanner_button")
+                )
+
+                // Gallery Selection Dropzone
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(22.dp))
+                        .background(glass.glassSurface)
+                        .border(1.4.dp, glass.glassBorder, RoundedCornerShape(22.dp))
+                        .clickable(enabled = !isProcessing, onClick = onLaunchImagePicker)
+                        .padding(20.dp)
+                        .testTag("select_image_dropzone"),
+                    contentAlignment = Alignment.Center
                 ) {
-                    GlassIconBadge(
-                        icon = Icons.Default.Image,
-                        contentDescription = "Select Notice Image",
-                        size = 62.dp,
-                        accentTint = glass.secondaryGlow
-                    )
-                    Text(
-                        text = "Tap to Choose Notice Photo",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = glass.textPrimary
-                    )
-                    Text(
-                        text = "Supports JPG, PNG & WEBP photos or screenshots",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = glass.textSecondary
-                    )
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        GlassIconBadge(
+                            icon = Icons.Default.Image,
+                            contentDescription = "Select Notice Image",
+                            size = 56.dp,
+                            accentTint = glass.secondaryGlow
+                        )
+                        Text(
+                            text = "Tap to Choose Notice Photo",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = glass.textPrimary
+                        )
+                        Text(
+                            text = "Supports JPG, PNG & WEBP photos or screenshots",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = glass.textSecondary
+                        )
+                    }
                 }
             }
         } else {
@@ -1537,8 +1652,18 @@ private fun UploadNoticeImageScreen(
 
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
+                        GlassButton(
+                            text = "Scan",
+                            icon = Icons.Default.CameraAlt,
+                            isPrimary = false,
+                            enabled = !isProcessing,
+                            onClick = onOpenCameraScanner,
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("rescan_camera_button")
+                        )
                         GlassButton(
                             text = "Change",
                             icon = Icons.Default.Refresh,
@@ -1624,165 +1749,492 @@ private fun ImageConfirmationScreen(
     isProcessing: Boolean,
     processingStageMessage: String?,
     analysisError: String?,
+    requestError: NoticeRequestError? = null,
+    networkStatus: NetworkConnectivityStatus = NetworkConnectivityStatus.ONLINE,
+    validationGateResult: NoticeValidationGateResult? = null,
     onRetryAnalysis: () -> Unit,
     onDeleteCurrentNotice: () -> Unit,
     onSelectAnotherImage: () -> Unit,
     onBackHome: () -> Unit
 ) {
+    val glass = LocalGlassPalette.current
+    val radius = LocalNoticeBuddyRadius.current
     val fileName = entry?.pdfFileName?.ifBlank { entry.title } ?: "Notice_Image.jpg"
     val description = entry?.descriptionResult
     val displayedTitle = description?.displayTitle(selectedLanguage, fileName) ?: fileName
-    val scrollState = rememberScrollState()
+    val isHindi = selectedLanguage == NoticeLanguage.HINDI
+    val isGateBlocked = validationGateResult != null &&
+        !validationGateResult.isAllowedForNoticeAnalysis &&
+        validationGateResult.status != NoticeValidationStatus.CLASSIFICATION_ERROR
 
-    GlassCard(
-        elevated = true,
-        modifier = Modifier
-            .fillMaxSize()
-            .testTag("image_confirmation_screen")
+    NoticeAnalysisScreenScaffold(
+        screenTestTag = "image_confirmation_screen",
+        sourceBadgeLabel = if (isHindi) "इमेज नोटिस" else "Image Notice",
+        sourceBadgeColor = glass.pinkAccent,
+        sourceBadgeBackground = glass.pinkSoft,
+        title = displayedTitle,
+        selectedLanguage = selectedLanguage,
+        onSelectLanguage = onSelectLanguage,
+        canDelete = entry != null && !isProcessing,
+        onDelete = onDeleteCurrentNotice,
+        isProcessing = isProcessing,
+        secondaryActionText = "Another Image",
+        secondaryActionIcon = Icons.Default.Image,
+        secondaryActionTestTag = "another_image_button",
+        onSecondaryAction = onSelectAnotherImage,
+        primaryActionText = "Done",
+        primaryActionTestTag = "image_confirm_return_home_button",
+        onPrimaryAction = onBackHome
     ) {
-        NoticeResultHeaderBar(
-            title = displayedTitle,
-            selectedLanguage = selectedLanguage,
-            onSelectLanguage = onSelectLanguage,
-            canDelete = entry != null && !isProcessing,
-            onDelete = onDeleteCurrentNotice
-        )
-
-        Spacer(modifier = Modifier.height(12.dp))
-
-        Column(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth()
-                .verticalScroll(scrollState),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            if (isProcessing) {
-                AnalysisLoadingCard(
-                    message = processingStageMessage ?: "Reading notice image and generating simple summary..."
-                )
-            }
-
-            if (analysisError != null && !isProcessing) {
-                AnalysisErrorCard(
-                    errorMessage = analysisError,
-                    onRetry = onRetryAnalysis
-                )
-            }
-
-            if (description != null) {
-                SimplifiedNoticeResultSection(
-                    description = description,
-                    selectedLanguage = selectedLanguage
-                )
-            }
+        if (isProcessing) {
+            AnalysisLoadingCard(
+                message = processingStageMessage ?: "Reading notice image and generating simple summary...",
+                selectedLanguage = selectedLanguage
+            )
         }
 
-        Spacer(modifier = Modifier.height(14.dp))
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            GlassButton(
-                text = "Another Image",
-                isPrimary = false,
-                enabled = !isProcessing,
-                onClick = onSelectAnotherImage,
-                modifier = Modifier.weight(1f)
+        if (isGateBlocked && !isProcessing) {
+            NoticeValidationGateCard(
+                gateResult = validationGateResult!!,
+                selectedLanguage = selectedLanguage,
+                chooseAnotherText = if (isHindi) "दूसरी इमेज चुनें" else "Choose Another Image",
+                onChooseAnother = onSelectAnotherImage
             )
-            GlassButton(
-                text = "Done",
-                isPrimary = true,
-                enabled = !isProcessing,
-                onClick = onBackHome,
+        }
+
+        if (analysisError != null && !isProcessing && !isGateBlocked) {
+            AnalysisErrorCard(
+                errorMessage = analysisError,
+                requestError = requestError,
+                networkStatus = networkStatus,
+                hasPreservedResult = description != null,
+                selectedLanguage = selectedLanguage,
+                onRetry = onRetryAnalysis
+            )
+        }
+
+        if (!isProcessing && analysisError == null && !isGateBlocked && description == null) {
+            AnalysisEmptyStateCard(
+                selectedLanguage = selectedLanguage,
+                onRetry = onRetryAnalysis
+            )
+        }
+
+        if (description != null) {
+            SimplifiedNoticeResultSection(
+                description = description,
+                selectedLanguage = selectedLanguage
+            )
+        }
+
+        // Source Image Document Metadata Card
+        GlassCard(
+            cornerRadius = radius.innerCard,
+            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                GlassIconBadge(
+                    icon = Icons.Default.Image,
+                    contentDescription = null,
+                    size = 34.dp,
+                    accentTint = glass.pinkAccent
+                )
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = if (isHindi) "स्रोत इमेज फ़ाइल" else "Source Notice Image",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = glass.textSecondary
+                    )
+                    Text(
+                        text = fileName,
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = glass.textPrimary,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.testTag("confirmed_image_filename")
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Unified NoticeBuddy Notice-Analysis Screen Scaffold:
+ * - Keeps the Notice Title and English/Hindi language selector (`LiquidLanguageTogglePill`) easy to find.
+ * - Adapts gracefully to compact/landscape heights (`BoxWithConstraints`) so scrollable content is never crushed.
+ * - Separates the scrollable analysis cards from the docked bottom action bar (`Another PDF` / `Another Image` / `Edit Text` + `Done`)
+ *   so bottom actions never overlap or hide scrollable content and the final card can always be scrolled into full view.
+ * - Respects Android navigation bars, IME insets, and safe drawing areas.
+ */
+@Composable
+private fun NoticeAnalysisScreenScaffold(
+    screenTestTag: String,
+    sourceBadgeLabel: String,
+    sourceBadgeColor: Color,
+    sourceBadgeBackground: Color,
+    title: String,
+    selectedLanguage: NoticeLanguage,
+    onSelectLanguage: (NoticeLanguage) -> Unit,
+    canDelete: Boolean,
+    onDelete: () -> Unit,
+    isProcessing: Boolean,
+    secondaryActionText: String,
+    secondaryActionIcon: ImageVector,
+    secondaryActionTestTag: String,
+    onSecondaryAction: () -> Unit,
+    primaryActionText: String,
+    primaryActionTestTag: String,
+    onPrimaryAction: () -> Unit,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    val spacing = LocalNoticeBuddySpacing.current
+    val radius = LocalNoticeBuddyRadius.current
+    val scrollState = rememberScrollState()
+
+    BoxWithConstraints(
+        modifier = Modifier
+            .fillMaxSize()
+            .imePadding()
+            .navigationBarsPadding()
+            .testTag(screenTestTag)
+    ) {
+        val isCompactHeight = maxHeight < 420.dp
+
+        Column(
+            modifier = Modifier.fillMaxSize()
+        ) {
+            NoticeResultHeaderBar(
+                sourceBadgeLabel = sourceBadgeLabel,
+                sourceBadgeColor = sourceBadgeColor,
+                sourceBadgeBackground = sourceBadgeBackground,
+                title = title,
+                selectedLanguage = selectedLanguage,
+                onSelectLanguage = onSelectLanguage,
+                canDelete = canDelete,
+                onDelete = onDelete,
+                isCompact = isCompactHeight
+            )
+
+            Spacer(modifier = Modifier.height(if (isCompactHeight) 8.dp else spacing.itemGap))
+
+            // Dedicated scrollable content region — strictly above the bottom action dock
+            Column(
                 modifier = Modifier
                     .weight(1f)
-                    .testTag("image_confirm_return_home_button")
-            )
+                    .fillMaxWidth()
+                    .verticalScroll(scrollState)
+                    .padding(horizontal = 2.dp, vertical = 2.dp)
+                    .testTag("notice_analysis_scroll_container"),
+                verticalArrangement = Arrangement.spacedBy(spacing.itemGap)
+            ) {
+                content()
+
+                // Bottom breathing space so the last card's shadow and content clear the scroll boundary completely
+                Spacer(modifier = Modifier.height(16.dp))
+            }
+
+            Spacer(modifier = Modifier.height(if (isCompactHeight) 6.dp else 10.dp))
+
+            // Non-overlapping docked bottom action bar
+            GlassCard(
+                elevated = true,
+                cornerRadius = radius.innerCard,
+                contentPadding = PaddingValues(
+                    horizontal = 14.dp,
+                    vertical = if (isCompactHeight) 8.dp else 12.dp
+                ),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = if (isCompactHeight) 4.dp else 8.dp)
+                    .testTag("notice_bottom_action_bar")
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    GlassButton(
+                        text = secondaryActionText,
+                        icon = secondaryActionIcon,
+                        isPrimary = false,
+                        enabled = !isProcessing,
+                        onClick = onSecondaryAction,
+                        modifier = Modifier
+                            .weight(1f)
+                            .testTag(secondaryActionTestTag)
+                    )
+                    GlassButton(
+                        text = primaryActionText,
+                        icon = Icons.Default.CheckCircle,
+                        isPrimary = true,
+                        enabled = !isProcessing,
+                        onClick = onPrimaryAction,
+                        modifier = Modifier
+                            .weight(1f)
+                            .testTag(primaryActionTestTag)
+                    )
+                }
+            }
         }
     }
 }
 
 @Composable
 private fun NoticeResultHeaderBar(
+    sourceBadgeLabel: String,
+    sourceBadgeColor: Color,
+    sourceBadgeBackground: Color,
     title: String,
     selectedLanguage: NoticeLanguage,
     onSelectLanguage: (NoticeLanguage) -> Unit,
     canDelete: Boolean,
-    onDelete: () -> Unit
+    onDelete: () -> Unit,
+    isCompact: Boolean = false
 ) {
     val glass = LocalGlassPalette.current
-    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    val radius = LocalNoticeBuddyRadius.current
+    var isTitleExpanded by remember(title) { mutableStateOf(false) }
+    val isLongTitle = title.length > 110
+
+    GlassCard(
+        elevated = true,
+        cornerRadius = radius.card,
+        contentPadding = PaddingValues(
+            horizontal = 16.dp,
+            vertical = if (isCompact) 10.dp else 14.dp
+        ),
+        modifier = Modifier.fillMaxWidth()
+    ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            LiquidLanguageTogglePill(
-                selectedLanguage = selectedLanguage,
-                onSelectLanguage = onSelectLanguage
+            NoticeBuddyAccentPill(
+                text = sourceBadgeLabel,
+                accentColor = sourceBadgeColor,
+                backgroundColor = sourceBadgeBackground
             )
 
-            if (canDelete) {
-                IconButton(
-                    onClick = onDelete,
-                    modifier = Modifier
-                        .size(48.dp)
-                        .testTag("delete_current_notice_button")
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.DeleteOutline,
-                        contentDescription = "Delete saved notice",
-                        tint = Color(0xFFF87171)
-                    )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                LiquidLanguageTogglePill(
+                    selectedLanguage = selectedLanguage,
+                    onSelectLanguage = onSelectLanguage
+                )
+
+                if (canDelete) {
+                    IconButton(
+                        onClick = onDelete,
+                        modifier = Modifier
+                            .size(48.dp)
+                            .clip(CircleShape)
+                            .background(Color(0xFFEF4444).copy(alpha = 0.10f))
+                            .testTag("delete_current_notice_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.DeleteOutline,
+                            contentDescription = "Delete saved notice",
+                            tint = Color(0xFFEF4444)
+                        )
+                    }
                 }
             }
         }
 
+        Spacer(modifier = Modifier.height(if (isCompact) 6.dp else 10.dp))
+
+        val collapsedMaxLines = if (isCompact) 1 else 3
         Text(
             text = title,
-            style = MaterialTheme.typography.titleLarge,
+            style = if (isCompact) MaterialTheme.typography.titleMedium else MaterialTheme.typography.titleLarge,
             fontWeight = FontWeight.ExtraBold,
             color = glass.textPrimary,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis
+            maxLines = if (isTitleExpanded || (!isLongTitle && !isCompact)) Int.MAX_VALUE else collapsedMaxLines,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier
+                .fillMaxWidth()
+                .then(
+                    if (isLongTitle || isCompact) {
+                        Modifier.clickable { isTitleExpanded = !isTitleExpanded }
+                    } else {
+                        Modifier
+                    }
+                )
+                .testTag("notice_result_title")
         )
+
+        if (isLongTitle && !isCompact) {
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = if (isTitleExpanded) "Show compact title" else "Tap title to read full heading",
+                style = MaterialTheme.typography.labelSmall,
+                color = glass.electricBlue,
+                modifier = Modifier.clickable { isTitleExpanded = !isTitleExpanded }
+            )
+        }
     }
 }
 
 @Composable
 private fun AnalysisLoadingCard(
-    message: String
+    message: String,
+    selectedLanguage: NoticeLanguage = NoticeLanguage.ENGLISH
 ) {
     val glass = LocalGlassPalette.current
+    val isHindi = selectedLanguage == NoticeLanguage.HINDI
     GlassCard(
+        elevated = true,
         modifier = Modifier
             .fillMaxWidth()
             .testTag("analysis_loading_card")
     ) {
+        NoticeBuddyAccentPill(
+            text = if (isHindi) "विश्लेषण जारी है" else "Analyzing Notice",
+            accentColor = glass.electricBlue,
+            backgroundColor = glass.electricBlueSoft
+        )
+        Spacer(modifier = Modifier.height(12.dp))
         Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-            CircularProgressIndicator(
-                color = glass.accentGlow,
-                strokeWidth = 3.dp,
-                modifier = Modifier.size(28.dp)
-            )
-            Column {
+            Box(
+                modifier = Modifier
+                    .size(48.dp)
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(glass.electricBlueSoft),
+                contentAlignment = Alignment.Center
+            ) {
+                CircularProgressIndicator(
+                    color = glass.electricBlue,
+                    strokeWidth = 3.dp,
+                    modifier = Modifier.size(24.dp)
+                )
+            }
+            Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = "Reading Notice...",
-                    style = MaterialTheme.typography.titleSmall,
+                    text = if (isHindi) "नोटिस पढ़ा जा रहा है..." else "Reading & Summarizing Notice...",
+                    style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold,
                     color = glass.textPrimary
                 )
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
                     text = message,
-                    style = MaterialTheme.typography.bodySmall,
+                    style = MaterialTheme.typography.bodyMedium,
                     color = glass.textSecondary,
                     modifier = Modifier.testTag("analysis_loading_message")
+                )
+            }
+        }
+        Spacer(modifier = Modifier.height(12.dp))
+        HorizontalDivider(color = glass.glassBorder.copy(alpha = 0.45f))
+        Spacer(modifier = Modifier.height(10.dp))
+        Text(
+            text = if (isHindi) {
+                "महत्वपूर्ण तिथियाँ, अगले कदम और आवश्यक दस्तावेज़ निकाले जा रहे हैं।"
+            } else {
+                "Extracting key dates, action steps, eligibility, and required documents."
+            },
+            style = MaterialTheme.typography.labelSmall,
+            color = glass.textSecondary
+        )
+    }
+}
+
+@Composable
+private fun NetworkConnectivityBanner(
+    networkStatus: NetworkConnectivityStatus,
+    selectedLanguage: NoticeLanguage = NoticeLanguage.ENGLISH,
+    onRefreshConnectivity: () -> Unit
+) {
+    val glass = LocalGlassPalette.current
+    val radius = LocalNoticeBuddyRadius.current
+    val isHindi = selectedLanguage == NoticeLanguage.HINDI
+    val bannerAccent = if (networkStatus == NetworkConnectivityStatus.CONNECTED_NO_INTERNET) {
+        Color(0xFFD97706)
+    } else {
+        Color(0xFFE11D48)
+    }
+    val bannerSoftBg = if (networkStatus == NetworkConnectivityStatus.CONNECTED_NO_INTERNET) {
+        Color(0xFFFEF3C7)
+    } else {
+        Color(0xFFFFE4E6)
+    }
+
+    GlassCard(
+        elevated = false,
+        cornerRadius = radius.innerCard,
+        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("network_status_banner")
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            GlassIconBadge(
+                icon = Icons.Default.WarningAmber,
+                contentDescription = networkStatus.badgeLabel(selectedLanguage),
+                size = 36.dp,
+                accentTint = bannerAccent
+            )
+            Column(modifier = Modifier.weight(1f)) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .semantics(mergeDescendants = true) {}
+                            .testTag("network_status_badge")
+                    ) {
+                        NoticeBuddyAccentPill(
+                            text = networkStatus.badgeLabel(selectedLanguage),
+                            accentColor = bannerAccent,
+                            backgroundColor = bannerSoftBg
+                        )
+                    }
+                    Text(
+                        text = networkStatus.bannerTitle(selectedLanguage),
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = glass.textPrimary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.testTag("network_status_title")
+                    )
+                }
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = networkStatus.bannerMessage(selectedLanguage),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = glass.textSecondary,
+                    modifier = Modifier.testTag("network_status_message")
+                )
+            }
+            IconButton(
+                onClick = onRefreshConnectivity,
+                modifier = Modifier
+                    .size(48.dp)
+                    .testTag("refresh_connectivity_button")
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Refresh,
+                    contentDescription = if (isHindi) "कनेक्शन जांचें" else "Check connection",
+                    tint = bannerAccent
                 )
             }
         }
@@ -1792,43 +2244,148 @@ private fun AnalysisLoadingCard(
 @Composable
 private fun AnalysisErrorCard(
     errorMessage: String,
+    requestError: NoticeRequestError? = null,
+    networkStatus: NetworkConnectivityStatus = NetworkConnectivityStatus.ONLINE,
+    hasPreservedResult: Boolean = false,
+    selectedLanguage: NoticeLanguage = NoticeLanguage.ENGLISH,
     onRetry: () -> Unit
 ) {
     val glass = LocalGlassPalette.current
+    val isHindi = selectedLanguage == NoticeLanguage.HINDI
+    val errorAccent = when (requestError?.category) {
+        NoticeRequestErrorCategory.REQUEST_TIMEOUT -> Color(0xFFD97706)
+        NoticeRequestErrorCategory.UPLOAD_FAILURE -> Color(0xFFDC2626)
+        else -> Color(0xFFE11D48)
+    }
+    val errorSoftBg = when (requestError?.category) {
+        NoticeRequestErrorCategory.REQUEST_TIMEOUT -> Color(0xFFFEF3C7)
+        else -> Color(0xFFFFE4E6)
+    }
+
+    val badgeText = requestError?.displayBadge(selectedLanguage)
+        ?: if (isHindi) "विश्लेषण रुका" else "Analysis Interrupted"
+    val headingText = requestError?.displayTitle(selectedLanguage)
+        ?: if (isHindi) "नोटिस का विश्लेषण नहीं हो सका" else "Could Not Read Notice"
+    val displayedMessage = if (isHindi && requestError != null) {
+        requestError.displayMessage(selectedLanguage)
+    } else {
+        requestError?.messageEn?.ifBlank { errorMessage } ?: errorMessage
+    }
+    val isReconnectedAfterOfflineError =
+        requestError?.category == NoticeRequestErrorCategory.NO_INTERNET &&
+            networkStatus == NetworkConnectivityStatus.ONLINE
+
     GlassCard(
+        elevated = true,
         modifier = Modifier
             .fillMaxWidth()
             .testTag("analysis_error_card")
     ) {
         Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Icon(
-                imageVector = Icons.Default.ErrorOutline,
+            Box(
+                modifier = Modifier
+                    .semantics(mergeDescendants = true) {}
+                    .testTag("request_error_category_badge")
+            ) {
+                NoticeBuddyAccentPill(
+                    text = badgeText,
+                    accentColor = errorAccent,
+                    backgroundColor = errorSoftBg
+                )
+            }
+            if (isReconnectedAfterOfflineError) {
+                Box(
+                    modifier = Modifier
+                        .semantics(mergeDescendants = true) {}
+                        .testTag("connection_restored_badge")
+                ) {
+                    NoticeBuddyAccentPill(
+                        text = if (isHindi) "इंटरनेट वापस आ गया है" else "Connection Restored",
+                        accentColor = glass.tealAccent,
+                        backgroundColor = glass.tealSoft
+                    )
+                }
+            }
+        }
+        Spacer(modifier = Modifier.height(10.dp))
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            GlassIconBadge(
+                icon = Icons.Default.ErrorOutline,
                 contentDescription = "Error",
-                tint = Color(0xFFF87171),
-                modifier = Modifier.size(26.dp)
+                size = 40.dp,
+                accentTint = errorAccent
             )
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = headingText,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = glass.textPrimary,
+                    modifier = Modifier.testTag("request_error_title")
+                )
+                Text(
+                    text = if (isReconnectedAfterOfflineError) {
+                        if (isHindi) "इंटरनेट सक्रिय है — अब सुरक्षित रूप से पुनः प्रयास करें" else "Internet is back online — tap Try Again to resume"
+                    } else {
+                        if (isHindi) "आपका दस्तावेज़ सुरक्षित है; कृपया नीचे विवरण देखें" else "Your selected document is preserved; see details below"
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = glass.textSecondary
+                )
+            }
+        }
+        Spacer(modifier = Modifier.height(10.dp))
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(12.dp))
+                .background(errorSoftBg.copy(alpha = 0.45f))
+                .padding(12.dp)
+        ) {
             Text(
-                text = "Could Not Read Notice",
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.Bold,
-                color = Color(0xFFF87171)
+                text = displayedMessage,
+                style = MaterialTheme.typography.bodyMedium,
+                color = glass.textPrimary,
+                modifier = Modifier.testTag("analysis_error_message")
             )
         }
-        Spacer(modifier = Modifier.height(8.dp))
-        Text(
-            text = errorMessage,
-            style = MaterialTheme.typography.bodySmall,
-            color = glass.textPrimary,
-            modifier = Modifier.testTag("analysis_error_message")
-        )
-        Spacer(modifier = Modifier.height(12.dp))
+        if (requestError != null || hasPreservedResult) {
+            Spacer(modifier = Modifier.height(8.dp))
+            val guidanceText = buildString {
+                if (requestError != null) {
+                    append(requestError.displayGuidance(selectedLanguage))
+                }
+                if (hasPreservedResult) {
+                    if (isNotEmpty()) append(" ")
+                    append(
+                        if (isHindi) {
+                            "आपका पूर्व सहेजा गया विश्लेषण नीचे सुरक्षित रूप से दिखाया गया है।"
+                        } else {
+                            "Your previously generated notice summary is still shown below."
+                        }
+                    )
+                }
+            }
+            Text(
+                text = guidanceText,
+                style = MaterialTheme.typography.bodySmall,
+                color = glass.textSecondary,
+                modifier = Modifier.testTag("request_error_guidance")
+            )
+        }
+        Spacer(modifier = Modifier.height(14.dp))
         GlassButton(
             text = "Try Again",
             icon = Icons.Default.Refresh,
-            isPrimary = false,
+            isPrimary = true,
+            enabled = requestError?.canRetrySafely ?: true,
             onClick = onRetry,
             modifier = Modifier
                 .fillMaxWidth()
@@ -1837,36 +2394,245 @@ private fun AnalysisErrorCard(
     }
 }
 
+@Composable
+private fun AnalysisEmptyStateCard(
+    selectedLanguage: NoticeLanguage = NoticeLanguage.ENGLISH,
+    onRetry: () -> Unit
+) {
+    val glass = LocalGlassPalette.current
+    val isHindi = selectedLanguage == NoticeLanguage.HINDI
+
+    GlassCard(
+        elevated = true,
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("analysis_empty_card")
+    ) {
+        NoticeBuddyAccentPill(
+            text = if (isHindi) "कोई सारांश नहीं" else "Ready to Analyze",
+            accentColor = glass.lavenderAccent,
+            backgroundColor = glass.lavenderSoft
+        )
+        Spacer(modifier = Modifier.height(10.dp))
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            GlassIconBadge(
+                icon = Icons.Default.AutoAwesome,
+                contentDescription = null,
+                size = 40.dp,
+                accentTint = glass.lavenderAccent
+            )
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = if (isHindi) "अभी तक कोई विश्लेषण उपलब्ध नहीं है" else "No Notice Analysis Available Yet",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = glass.textPrimary
+                )
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = if (isHindi) {
+                        "महत्वपूर्ण तिथियाँ, अगले कदम और आवश्यक दस्तावेज़ देखने के लिए विश्लेषण शुरू करें।"
+                    } else {
+                        "Generate a structured breakdown of important dates, next steps, and required documents."
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = glass.textSecondary
+                )
+            }
+        }
+        Spacer(modifier = Modifier.height(14.dp))
+        GlassButton(
+            text = if (isHindi) "नोटिस का विश्लेषण करें" else "Analyze Notice",
+            icon = Icons.Default.Refresh,
+            isPrimary = true,
+            onClick = onRetry,
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag("empty_state_analyze_button")
+        )
+    }
+}
+
 /**
- * Simplified, Non-Confusing Notice Result View:
- * Shows a short 1-2 line overview + ONLY the 3 user-selected sections:
- * 1. Important Dates & Deadlines
- * 2. What To Do Next
- * 3. Who Can Apply & Required Documents
+ * Phase 5 Notice-Only Validation Gate Card:
+ * Displayed when a document is blocked before normal notice analysis:
+ * - `NOT_A_NOTICE`: Confidently identified non-notice (essay, novel, invoice, resume, irrelevant document).
+ * - `NEEDS_CLEARER_INPUT`: Uncertain classification or blurry/insufficient text.
+ * - `UNREADABLE_DOCUMENT`: Blank, corrupted, or unreadable scan (distinct from a confirmed non-notice).
+ */
+@Composable
+private fun NoticeValidationGateCard(
+    gateResult: NoticeValidationGateResult,
+    selectedLanguage: NoticeLanguage = NoticeLanguage.ENGLISH,
+    chooseAnotherText: String,
+    onChooseAnother: () -> Unit
+) {
+    val glass = LocalGlassPalette.current
+    val isHindi = selectedLanguage == NoticeLanguage.HINDI
+    val accentColor = when (gateResult.status) {
+        NoticeValidationStatus.NOT_A_NOTICE -> glass.pinkAccent
+        NoticeValidationStatus.NEEDS_CLEARER_INPUT -> Color(0xFFD97706)
+        NoticeValidationStatus.UNREADABLE_DOCUMENT -> Color(0xFFE11D48)
+        else -> glass.electricBlue
+    }
+    val softBackground = when (gateResult.status) {
+        NoticeValidationStatus.NOT_A_NOTICE -> glass.pinkSoft
+        NoticeValidationStatus.NEEDS_CLEARER_INPUT -> Color(0xFFFEF3C7)
+        NoticeValidationStatus.UNREADABLE_DOCUMENT -> Color(0xFFFFE4E6)
+        else -> glass.electricBlueSoft
+    }
+
+    GlassCard(
+        elevated = true,
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("notice_validation_gate_card")
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(modifier = Modifier.testTag("validation_gate_status_badge")) {
+                NoticeBuddyAccentPill(
+                    text = gateResult.displayStatusBadge(selectedLanguage),
+                    accentColor = accentColor,
+                    backgroundColor = softBackground
+                )
+            }
+            Box(modifier = Modifier.testTag("validation_gate_category_badge")) {
+                NoticeBuddyAccentPill(
+                    text = gateResult.displayCategoryLabel(selectedLanguage),
+                    accentColor = glass.lavenderAccent,
+                    backgroundColor = glass.lavenderSoft
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            GlassIconBadge(
+                icon = when (gateResult.status) {
+                    NoticeValidationStatus.NOT_A_NOTICE -> Icons.Default.WarningAmber
+                    NoticeValidationStatus.NEEDS_CLEARER_INPUT -> Icons.Default.WarningAmber
+                    else -> Icons.Default.ErrorOutline
+                },
+                contentDescription = gateResult.displayStatusBadge(selectedLanguage),
+                size = 42.dp,
+                accentTint = accentColor
+            )
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = gateResult.displayHeading(selectedLanguage),
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = glass.textPrimary,
+                    modifier = Modifier.testTag("validation_gate_heading")
+                )
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = if (isHindi) {
+                        "सरकारी अधिसूचनाएं, स्कूल/कॉलेज सर्कुलर, छात्रवृत्ति नोटिस और कार्यालय निर्देश समर्थित हैं।"
+                    } else {
+                        "Supports government notifications, school/college circulars, scholarship notices, office notices, and public announcements."
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = glass.textSecondary
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(14.dp))
+                .background(softBackground.copy(alpha = 0.45f))
+                .padding(14.dp)
+        ) {
+            Text(
+                text = gateResult.displayMessage(selectedLanguage),
+                style = MaterialTheme.typography.bodyMedium,
+                lineHeight = 22.sp,
+                color = glass.textPrimary,
+                modifier = Modifier.testTag("validation_gate_message")
+            )
+        }
+
+        Spacer(modifier = Modifier.height(14.dp))
+
+        GlassButton(
+            text = chooseAnotherText,
+            icon = Icons.Default.UploadFile,
+            isPrimary = true,
+            onClick = onChooseAnother,
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag("validation_gate_choose_another_button")
+        )
+    }
+}
+
+/**
+ * NoticeBuddy Structured Notice-Analysis Cards (Phase 4):
+ * Presents information consistently in the required 7-section order:
+ * 1. In Short — concise explanation of the notice (`description_summary`)
+ * 2. Important Dates & Deadlines (`description_dates`)
+ * 3. Who Can Apply / Eligibility (`description_eligibility`)
+ * 4. Required Documents (`description_documents`)
+ * 5. What To Do Next — actionable numbered steps (`description_next_steps`)
+ * 6. Other Important Conditions, if present (`description_other_conditions` + `description_contact_details`)
+ * 7. Ask NoticeBuddy — relevant follow-up questions, if present (`description_ask_noticebuddy`)
  */
 @Composable
 private fun SimplifiedNoticeResultSection(
     description: NoticeDescriptionResult,
     selectedLanguage: NoticeLanguage
 ) {
+    val context = LocalContext.current
     val glass = LocalGlassPalette.current
+    val spacing = LocalNoticeBuddySpacing.current
+    val radius = LocalNoticeBuddyRadius.current
     val isHindi = selectedLanguage == NoticeLanguage.HINDI
 
     val summaryText = description.displaySummary(selectedLanguage)
     val datesList = description.displayImportantDates(selectedLanguage)
-    val nextStepsList = description.displayNextSteps(selectedLanguage)
+    val datesNotSpecified = NoticeDescriptionResult.isNotSpecifiedList(datesList)
     val eligibilityText = description.displayEligibility(selectedLanguage)
+    val eligibilityNotSpecified = NoticeDescriptionResult.isNotSpecifiedValue(eligibilityText)
     val docsList = description.displayRequiredDocuments(selectedLanguage)
+    val docsNotSpecified = NoticeDescriptionResult.isNotSpecifiedList(docsList)
+    val nextStepsList = description.displayNextSteps(selectedLanguage)
+    val stepsNotSpecified = NoticeDescriptionResult.isNotSpecifiedList(nextStepsList)
+    val otherConditionsList = description.displayOtherConditions(selectedLanguage)
+    val missingInfoList = description.displayMissingOrAmbiguousInfo(selectedLanguage)
+    val hasContact = description.hasStatedContactDetails()
+    val contactText = description.displayContactDetails(selectedLanguage)
+    val askQuestionsList = description.displayAskNoticeBuddyQuestions(selectedLanguage)
+
+    val notSpecifiedBannerText = if (isHindi) {
+        "नोटिस में उल्लेख नहीं है — यह जानकारी मूल नोटिस में निर्दिष्ट नहीं की गई है (यह पठन/OCR त्रुटि नहीं है)।"
+    } else {
+        "Not specified in the notice — This detail is absent from the source notice (not a reading or OCR error)."
+    }
 
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .testTag("notice_description_card"),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+        verticalArrangement = Arrangement.spacedBy(spacing.itemGap)
     ) {
         if (!description.limitWarning.isNullOrBlank()) {
             GlassCard(
-                cornerRadius = 18.dp,
+                cornerRadius = radius.innerCard,
                 contentPadding = PaddingValues(14.dp),
                 modifier = Modifier
                     .fillMaxWidth()
@@ -1879,211 +2645,685 @@ private fun SimplifiedNoticeResultSection(
                     Icon(
                         imageVector = Icons.Default.WarningAmber,
                         contentDescription = "Limit Warning",
-                        tint = Color(0xFFFBBF24),
-                        modifier = Modifier.size(20.dp)
+                        tint = Color(0xFFD97706),
+                        modifier = Modifier.size(22.dp)
                     )
                     Text(
                         text = description.limitWarning,
                         style = MaterialTheme.typography.bodySmall,
-                        color = glass.textPrimary
+                        color = glass.textPrimary,
+                        modifier = Modifier.weight(1f)
                     )
                 }
             }
         }
 
-        // Short Plain Summary Card
+        // 1. In Short — Concise explanation of the notice
         GlassCard(
-            cornerRadius = 20.dp,
-            contentPadding = PaddingValues(16.dp),
+            elevated = true,
+            cornerRadius = radius.card,
+            contentPadding = PaddingValues(spacing.cardPadding),
             modifier = Modifier.fillMaxWidth()
         ) {
-            Text(
-                text = if (isHindi) "संक्षिप्त सारांश (In Short)" else "In Short",
-                style = MaterialTheme.typography.labelMedium,
-                fontWeight = FontWeight.Bold,
-                color = glass.accentGlow
-            )
-            Spacer(modifier = Modifier.height(6.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    GlassIconBadge(
+                        icon = Icons.Default.AutoAwesome,
+                        contentDescription = null,
+                        size = 38.dp,
+                        accentTint = glass.electricBlue
+                    )
+                    Text(
+                        text = if (isHindi) "संक्षेप में (In Short)" else "In Short",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = glass.textPrimary
+                    )
+                }
+                NoticeBuddyAccentPill(
+                    text = if (isHindi) "मुख्य सारांश" else "Key Takeaway",
+                    accentColor = glass.electricBlue,
+                    backgroundColor = glass.electricBlueSoft
+                )
+            }
+            Spacer(modifier = Modifier.height(10.dp))
+            HorizontalDivider(color = glass.glassBorder.copy(alpha = 0.45f))
+            Spacer(modifier = Modifier.height(10.dp))
             Text(
                 text = summaryText,
                 style = MaterialTheme.typography.bodyLarge,
                 fontWeight = FontWeight.Medium,
+                lineHeight = 24.sp,
                 color = glass.textPrimary,
-                modifier = Modifier.testTag("description_summary")
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("description_summary")
             )
+            Spacer(modifier = Modifier.height(10.dp))
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(glass.electricBlueSoft.copy(alpha = 0.45f))
+                    .padding(horizontal = 10.dp, vertical = 6.dp)
+                    .testTag("description_extraction_status"),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.CheckCircle,
+                    contentDescription = null,
+                    tint = glass.electricBlue,
+                    modifier = Modifier.size(15.dp)
+                )
+                Text(
+                    text = if (isHindi) {
+                        "स्रोत सफलतापूर्वक पढ़ा गया (${description.extractionMethod.displayLabel}) • केवल नोटिस में दिए गए तथ्यों पर आधारित"
+                    } else {
+                        "Notice read successfully (${description.extractionMethod.displayLabel}) • Grounded strictly in notice text"
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = glass.textSecondary
+                )
+            }
         }
 
-        // Section 1: Important Dates & Deadlines
+        // 2. Important Dates & Deadlines
         GlassCard(
-            cornerRadius = 20.dp,
-            contentPadding = PaddingValues(16.dp),
+            cornerRadius = radius.card,
+            contentPadding = PaddingValues(spacing.cardPadding),
             modifier = Modifier
                 .fillMaxWidth()
                 .testTag("description_dates")
         ) {
             Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                GlassIconBadge(
-                    icon = Icons.Default.CalendarMonth,
-                    contentDescription = null,
-                    size = 38.dp,
-                    accentTint = glass.accentGlow
-                )
-                Text(
-                    text = if (isHindi) "महत्वपूर्ण तिथियाँ (Important Dates)" else "Important Dates & Deadlines",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = glass.textPrimary
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    GlassIconBadge(
+                        icon = Icons.Default.CalendarMonth,
+                        contentDescription = null,
+                        size = 38.dp,
+                        accentTint = glass.electricBlue
+                    )
+                    Text(
+                        text = if (isHindi) "महत्वपूर्ण तिथियाँ और समय-सीमा" else "Important Dates & Deadlines",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = glass.textPrimary
+                    )
+                }
+                NoticeBuddyAccentPill(
+                    text = if (datesNotSpecified) {
+                        if (isHindi) "नोटिस में नहीं" else "Not Specified"
+                    } else {
+                        "${datesList.size}"
+                    },
+                    accentColor = glass.electricBlue,
+                    backgroundColor = glass.electricBlueSoft
                 )
             }
             Spacer(modifier = Modifier.height(10.dp))
-            datesList.forEach { item ->
-                Row(
-                    modifier = Modifier.padding(vertical = 4.dp),
-                    verticalAlignment = Alignment.Top
-                ) {
-                    Text(
-                        text = "• ",
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = glass.accentGlow
-                    )
-                    Text(
-                        text = item,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = glass.textPrimary
-                    )
+            HorizontalDivider(color = glass.glassBorder.copy(alpha = 0.45f))
+            Spacer(modifier = Modifier.height(10.dp))
+            if (datesNotSpecified) {
+                NotSpecifiedFieldNoticeBox(
+                    text = notSpecifiedBannerText,
+                    accentColor = glass.electricBlue,
+                    backgroundColor = glass.electricBlueSoft
+                )
+            } else {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    datesList.forEach { item ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(glass.electricBlueSoft.copy(alpha = 0.45f))
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.Top,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .padding(top = 6.dp)
+                                    .size(8.dp)
+                                    .clip(CircleShape)
+                                    .background(glass.electricBlue)
+                            )
+                            Text(
+                                text = item,
+                                style = MaterialTheme.typography.bodyMedium,
+                                lineHeight = 21.sp,
+                                color = glass.textPrimary,
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
                 }
             }
         }
 
-        // Section 2: What To Do Next (Action Steps)
+        // 3. Who Can Apply / Eligibility
         GlassCard(
-            cornerRadius = 20.dp,
-            contentPadding = PaddingValues(16.dp),
+            cornerRadius = radius.card,
+            contentPadding = PaddingValues(spacing.cardPadding),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    GlassIconBadge(
+                        icon = Icons.Default.Person,
+                        contentDescription = null,
+                        size = 38.dp,
+                        accentTint = glass.lavenderAccent
+                    )
+                    Text(
+                        text = if (isHindi) "कौन आवेदन कर सकता है / पात्रता" else "Who Can Apply / Eligibility",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = glass.textPrimary
+                    )
+                }
+                NoticeBuddyAccentPill(
+                    text = if (eligibilityNotSpecified) {
+                        if (isHindi) "नोटिस में नहीं" else "Not Specified"
+                    } else {
+                        if (isHindi) "पात्रता" else "Eligibility"
+                    },
+                    accentColor = glass.lavenderAccent,
+                    backgroundColor = glass.lavenderSoft
+                )
+            }
+            Spacer(modifier = Modifier.height(10.dp))
+            HorizontalDivider(color = glass.glassBorder.copy(alpha = 0.45f))
+            Spacer(modifier = Modifier.height(10.dp))
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(glass.lavenderSoft.copy(alpha = 0.45f))
+                    .padding(horizontal = 12.dp, vertical = 10.dp)
+            ) {
+                Text(
+                    text = if (eligibilityNotSpecified) notSpecifiedBannerText else eligibilityText,
+                    style = MaterialTheme.typography.bodyMedium,
+                    lineHeight = 21.sp,
+                    color = if (eligibilityNotSpecified) glass.textSecondary else glass.textPrimary,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("description_eligibility")
+                )
+            }
+        }
+
+        // 4. Required Documents
+        GlassCard(
+            cornerRadius = radius.card,
+            contentPadding = PaddingValues(spacing.cardPadding),
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag("description_documents")
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    GlassIconBadge(
+                        icon = Icons.Default.Checklist,
+                        contentDescription = null,
+                        size = 38.dp,
+                        accentTint = glass.pinkAccent
+                    )
+                    Text(
+                        text = if (isHindi) "आवश्यक दस्तावेज़ (Required Documents)" else "Required Documents",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = glass.textPrimary
+                    )
+                }
+                NoticeBuddyAccentPill(
+                    text = if (docsNotSpecified) {
+                        if (isHindi) "नोटिस में नहीं" else "Not Specified"
+                    } else {
+                        if (isHindi) "${docsList.size} दस्तावेज़" else "${docsList.size} Docs"
+                    },
+                    accentColor = glass.pinkAccent,
+                    backgroundColor = glass.pinkSoft
+                )
+            }
+            Spacer(modifier = Modifier.height(10.dp))
+            HorizontalDivider(color = glass.glassBorder.copy(alpha = 0.45f))
+            Spacer(modifier = Modifier.height(10.dp))
+            if (docsNotSpecified) {
+                NotSpecifiedFieldNoticeBox(
+                    text = notSpecifiedBannerText,
+                    accentColor = glass.pinkAccent,
+                    backgroundColor = glass.pinkSoft
+                )
+            } else {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    docsList.forEach { doc ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(glass.pinkSoft.copy(alpha = 0.45f))
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.Top,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.CheckCircle,
+                                contentDescription = null,
+                                tint = glass.pinkAccent,
+                                modifier = Modifier
+                                    .size(18.dp)
+                                    .padding(top = 2.dp)
+                            )
+                            Text(
+                                text = doc,
+                                style = MaterialTheme.typography.bodyMedium,
+                                lineHeight = 21.sp,
+                                color = glass.textPrimary,
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        // 5. What To Do Next — Actionable numbered steps
+        GlassCard(
+            cornerRadius = radius.card,
+            contentPadding = PaddingValues(spacing.cardPadding),
             modifier = Modifier
                 .fillMaxWidth()
                 .testTag("description_next_steps")
         ) {
             Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                GlassIconBadge(
-                    icon = Icons.AutoMirrored.Filled.FormatListBulleted,
-                    contentDescription = null,
-                    size = 38.dp,
-                    accentTint = Color(0xFF34D399)
-                )
-                Text(
-                    text = if (isHindi) "आगे क्या करें (What To Do Next)" else "What To Do Next",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = glass.textPrimary
-                )
-            }
-            Spacer(modifier = Modifier.height(10.dp))
-            nextStepsList.forEachIndexed { idx, step ->
                 Row(
-                    modifier = Modifier.padding(vertical = 4.dp),
-                    verticalAlignment = Alignment.Top
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier = Modifier.weight(1f)
                 ) {
-                    Text(
-                        text = "${idx + 1}. ",
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = Color(0xFF34D399)
+                    GlassIconBadge(
+                        icon = Icons.AutoMirrored.Filled.FormatListBulleted,
+                        contentDescription = null,
+                        size = 38.dp,
+                        accentTint = glass.tealAccent
                     )
                     Text(
-                        text = step,
-                        style = MaterialTheme.typography.bodyMedium,
+                        text = if (isHindi) "आगे क्या करें (What To Do Next)" else "What To Do Next",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
                         color = glass.textPrimary
                     )
                 }
-            }
-        }
-
-        // Section 3: Who Can Apply & Required Documents
-        GlassCard(
-            cornerRadius = 20.dp,
-            contentPadding = PaddingValues(16.dp),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                GlassIconBadge(
-                    icon = Icons.Default.Checklist,
-                    contentDescription = null,
-                    size = 38.dp,
-                    accentTint = glass.secondaryGlow
-                )
-                Text(
-                    text = if (isHindi) {
-                        "पात्रता और आवश्यक दस्तावेज़"
+                NoticeBuddyAccentPill(
+                    text = if (stepsNotSpecified) {
+                        if (isHindi) "नोटिस में नहीं" else "Not Specified"
                     } else {
-                        "Who Can Apply & Required Documents"
+                        if (isHindi) "${nextStepsList.size} चरण" else "${nextStepsList.size} Steps"
                     },
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = glass.textPrimary
+                    accentColor = glass.tealAccent,
+                    backgroundColor = glass.tealSoft
                 )
             }
-
             Spacer(modifier = Modifier.height(10.dp))
-
-            Text(
-                text = if (isHindi) "कौन आवेदन कर सकता है (Who Can Apply):" else "Who Can Apply:",
-                style = MaterialTheme.typography.labelMedium,
-                fontWeight = FontWeight.Bold,
-                color = glass.accentGlow
-            )
-            Spacer(modifier = Modifier.height(4.dp))
-            Text(
-                text = eligibilityText,
-                style = MaterialTheme.typography.bodyMedium,
-                color = glass.textPrimary,
-                modifier = Modifier.testTag("description_eligibility")
-            )
-
-            Spacer(modifier = Modifier.height(12.dp))
-            HorizontalDivider(color = glass.glassBorder.copy(alpha = 0.3f))
+            HorizontalDivider(color = glass.glassBorder.copy(alpha = 0.45f))
             Spacer(modifier = Modifier.height(10.dp))
-
-            Column(modifier = Modifier.testTag("description_documents")) {
-                Text(
-                    text = if (isHindi) "आवश्यक दस्तावेज़ (Required Documents):" else "Required Documents:",
-                    style = MaterialTheme.typography.labelMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = glass.secondaryGlow
+            if (stepsNotSpecified) {
+                NotSpecifiedFieldNoticeBox(
+                    text = notSpecifiedBannerText,
+                    accentColor = glass.tealAccent,
+                    backgroundColor = glass.tealSoft
                 )
-                Spacer(modifier = Modifier.height(4.dp))
-                docsList.forEach { doc ->
-                    Row(
-                        modifier = Modifier.padding(vertical = 3.dp),
-                        verticalAlignment = Alignment.Top
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.CheckCircle,
-                            contentDescription = null,
-                            tint = glass.secondaryGlow,
+            } else {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    nextStepsList.forEachIndexed { idx, step ->
+                        Row(
                             modifier = Modifier
-                                .size(16.dp)
-                                .padding(top = 2.dp)
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = doc,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = glass.textPrimary
-                        )
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(glass.tealSoft.copy(alpha = 0.45f))
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.Top,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(24.dp)
+                                    .clip(CircleShape)
+                                    .background(glass.tealSoft),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = "${idx + 1}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = glass.tealAccent
+                                )
+                            }
+                            Text(
+                                text = step,
+                                style = MaterialTheme.typography.bodyMedium,
+                                lineHeight = 21.sp,
+                                color = glass.textPrimary,
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
                     }
                 }
             }
         }
+
+        // 6. Other Important Conditions, if present (conditions, stated contact info, or unstated details alert)
+        if (otherConditionsList.isNotEmpty() || missingInfoList.isNotEmpty() || hasContact) {
+            GlassCard(
+                cornerRadius = radius.card,
+                contentPadding = PaddingValues(spacing.cardPadding),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("description_other_conditions")
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        GlassIconBadge(
+                            icon = Icons.Default.Description,
+                            contentDescription = null,
+                            size = 38.dp,
+                            accentTint = glass.lavenderAccent
+                        )
+                        Text(
+                            text = if (isHindi) "अन्य महत्वपूर्ण शर्तें (Other Conditions)" else "Other Important Conditions",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = glass.textPrimary
+                        )
+                    }
+                    NoticeBuddyAccentPill(
+                        text = if (isHindi) "नियम व विवरण" else "Rules & Notes",
+                        accentColor = glass.lavenderAccent,
+                        backgroundColor = glass.lavenderSoft
+                    )
+                }
+                Spacer(modifier = Modifier.height(10.dp))
+                HorizontalDivider(color = glass.glassBorder.copy(alpha = 0.45f))
+                Spacer(modifier = Modifier.height(10.dp))
+
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    otherConditionsList.forEach { condition ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(glass.lavenderSoft.copy(alpha = 0.45f))
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.Top,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .padding(top = 6.dp)
+                                    .size(8.dp)
+                                    .clip(CircleShape)
+                                    .background(glass.lavenderAccent)
+                            )
+                            Text(
+                                text = condition,
+                                style = MaterialTheme.typography.bodyMedium,
+                                lineHeight = 21.sp,
+                                color = glass.textPrimary,
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
+
+                    if (hasContact) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(glass.electricBlueSoft.copy(alpha = 0.45f))
+                                .padding(horizontal = 12.dp, vertical = 10.dp)
+                                .testTag("description_contact_details"),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            NoticeBuddyAccentPill(
+                                text = if (isHindi) "संपर्क विवरण" else "Contact Info",
+                                accentColor = glass.electricBlue,
+                                backgroundColor = glass.electricBlueSoft
+                            )
+                            Text(
+                                text = contactText,
+                                style = MaterialTheme.typography.bodySmall,
+                                fontWeight = FontWeight.SemiBold,
+                                color = glass.textPrimary,
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
+
+                    if (missingInfoList.isNotEmpty()) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(glass.pinkSoft.copy(alpha = 0.38f))
+                                .padding(horizontal = 12.dp, vertical = 10.dp)
+                                .testTag("description_missing_info_section"),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Text(
+                                text = if (isHindi) {
+                                    "नोटिस में अनुपस्थित विवरण (ओसीआर त्रुटि नहीं):"
+                                } else {
+                                    "Details Not Specified in Notice (Not an Extraction Error):"
+                                },
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = glass.pinkAccent
+                            )
+                            missingInfoList.forEach { missingItem ->
+                                Row(
+                                    verticalAlignment = Alignment.Top,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Text(
+                                        text = "•",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        fontWeight = FontWeight.Bold,
+                                        color = glass.pinkAccent
+                                    )
+                                    Text(
+                                        text = missingItem,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        lineHeight = 19.sp,
+                                        color = glass.textPrimary,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 7. Ask NoticeBuddy — Relevant follow-up questions, if present
+        if (askQuestionsList.isNotEmpty()) {
+            GlassCard(
+                cornerRadius = radius.card,
+                contentPadding = PaddingValues(spacing.cardPadding),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("description_ask_noticebuddy")
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        GlassIconBadge(
+                            icon = Icons.Default.AutoAwesome,
+                            contentDescription = null,
+                            size = 38.dp,
+                            accentTint = glass.electricBlue
+                        )
+                        Column {
+                            Text(
+                                text = if (isHindi) "नोटिसबडी से पूछें (Ask NoticeBuddy)" else "Ask NoticeBuddy",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = glass.textPrimary
+                            )
+                            Text(
+                                text = if (isHindi) {
+                                    "संबंधित कार्यालय से पूछने या जांचने योग्य प्रश्न (टैप करके कॉपी करें)"
+                                } else {
+                                    "Relevant follow-up questions to verify (tap any question to copy)"
+                                },
+                                style = MaterialTheme.typography.labelSmall,
+                                color = glass.textSecondary
+                            )
+                        }
+                    }
+                    NoticeBuddyAccentPill(
+                        text = if (isHindi) "${askQuestionsList.size} प्रश्न" else "${askQuestionsList.size} Q&A",
+                        accentColor = glass.electricBlue,
+                        backgroundColor = glass.electricBlueSoft
+                    )
+                }
+                Spacer(modifier = Modifier.height(10.dp))
+                HorizontalDivider(color = glass.glassBorder.copy(alpha = 0.45f))
+                Spacer(modifier = Modifier.height(10.dp))
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    askQuestionsList.forEachIndexed { idx, question ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(glass.electricBlueSoft.copy(alpha = 0.45f))
+                                .clickable {
+                                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                                    clipboard?.setPrimaryClip(ClipData.newPlainText("NoticeBuddy Question", question))
+                                    Toast.makeText(
+                                        context,
+                                        if (isHindi) "प्रश्न कॉपी किया गया" else "Follow-up question copied",
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                }
+                                .padding(horizontal = 12.dp, vertical = 10.dp)
+                                .testTag("ask_noticebuddy_question_$idx"),
+                            verticalAlignment = Alignment.Top,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(24.dp)
+                                    .clip(CircleShape)
+                                    .background(glass.electricBlueSoft),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = "Q${idx + 1}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = glass.electricBlue
+                                )
+                            }
+                            Text(
+                                text = question,
+                                style = MaterialTheme.typography.bodyMedium,
+                                lineHeight = 21.sp,
+                                color = glass.textPrimary,
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun NotSpecifiedFieldNoticeBox(
+    text: String,
+    accentColor: Color,
+    backgroundColor: Color
+) {
+    val glass = LocalGlassPalette.current
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(backgroundColor.copy(alpha = 0.35f))
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .size(8.dp)
+                .clip(CircleShape)
+                .background(accentColor.copy(alpha = 0.7f))
+        )
+        Text(
+            text = text,
+            style = MaterialTheme.typography.bodyMedium,
+            lineHeight = 21.sp,
+            color = glass.textSecondary,
+            modifier = Modifier.weight(1f)
+        )
     }
 }
 
@@ -2341,7 +3581,7 @@ private fun SettingsApiKeysScreen(
             )
             Spacer(modifier = Modifier.height(8.dp))
             Text(
-                text = "NoticeMate AI uses integrated Firebase AI Logic (Gemini 2.5 Flash) by default and optional environment keys (.env) without exposing secrets in local storage.",
+                text = "NoticeBuddy uses integrated Firebase AI Logic (Gemini 2.5 Flash) by default and optional environment keys (.env) without exposing secrets in local storage.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = glass.textSecondary
             )
@@ -2453,7 +3693,7 @@ private fun SettingsDebugLogsScreen(
                 onClick = {
                     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
                     val formatted = AppDiagnosticLogger.formatAllLogsAsText()
-                    clipboard?.setPrimaryClip(ClipData.newPlainText("NoticeMate Debug Logs", formatted))
+                    clipboard?.setPrimaryClip(ClipData.newPlainText("NoticeBuddy Debug Logs", formatted))
                     copiedFeedback = true
                     runCatching {
                         Toast.makeText(context, "Debug logs copied to clipboard", Toast.LENGTH_SHORT).show()

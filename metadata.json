@@ -1,5 +1,5 @@
 {
-  "name": "NoticeMate AI",
+  "name": "NoticeBuddy",
   "description": "Evidence-aware accessibility assistant that transforms confusing campus notices into verified bilingual English and Hindi action checklists.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]

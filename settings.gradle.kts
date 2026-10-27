@@ -22,6 +22,6 @@ dependencyResolutionManagement {
   }
 }
 
-rootProject.name = "NoticeMate AI"
+rootProject.name = "NoticeBuddy"
 
 include(":app")

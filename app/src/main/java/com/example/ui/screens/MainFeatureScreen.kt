@@ -940,7 +940,7 @@ private fun launchCalendarDeadlineIntent(context: Context, notice: NoticeDocumen
 
     val intent = Intent(Intent.ACTION_INSERT).apply {
         data = CalendarContract.Events.CONTENT_URI
-        putExtra(CalendarContract.Events.TITLE, "[NoticeMate] ${notice.title} (${notice.deadline})")
+        putExtra(CalendarContract.Events.TITLE, "[NoticeBuddy] ${notice.title} (${notice.deadline})")
         putExtra(
             CalendarContract.Events.DESCRIPTION,
             buildString {

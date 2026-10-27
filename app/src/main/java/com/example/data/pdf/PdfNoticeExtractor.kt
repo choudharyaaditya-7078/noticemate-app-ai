@@ -79,6 +79,8 @@ interface PdfOcrEngine {
         pageRotationDegrees: Int,
         maxImageDimensionPx: Int
     ): String
+
+    suspend fun recognizeBitmapText(pageBitmap: Bitmap): String = ""
 }
 
 /**
@@ -136,7 +138,7 @@ class AndroidMlKitPdfOcrEngine(
         }
     }
 
-    suspend fun recognizeBitmapText(pageBitmap: Bitmap): String = withContext(Dispatchers.IO) {
+    override suspend fun recognizeBitmapText(pageBitmap: Bitmap): String = withContext(Dispatchers.IO) {
         // 1. Primary Cloud Vision OCR (offloads work from 6 GB RAM phone for lowest latency)
         val cloudText = runCloudVisionOcr(pageBitmap)
         if (cloudText.isNotBlank()) {
@@ -429,6 +431,43 @@ class PdfNoticeExtractor(
         } catch (e: Exception) {
             Result.failure(
                 PdfExtractionException("Failed to load notice image: ${e.message ?: "Invalid image"}", e)
+            )
+        }
+    }
+
+    val usesCustomOcrEngine: Boolean
+        get() = ocrEngine !is AndroidMlKitPdfOcrEngine
+
+    /**
+     * Extracts readable text from a decoded notice or camera-scanned image [Bitmap]
+     * using the configured [PdfOcrEngine] (Cloud Vision + on-device ML Kit Devanagari/Latin OCR).
+     */
+    suspend fun extractTextFromNoticeImage(bitmap: Bitmap): String = withContext(ioDispatcher) {
+        extractTextFromNoticeImageResult(bitmap).getOrDefault("")
+    }
+
+    /**
+     * Extracts readable text from a notice or scanned page [Bitmap], returning a [Result]
+     * so callers can distinguish an OCR engine failure from an empty/blank page.
+     */
+    suspend fun extractTextFromNoticeImageResult(bitmap: Bitmap): Result<String> = withContext(ioDispatcher) {
+        if (bitmap.isRecycled || bitmap.width <= 0 || bitmap.height <= 0) {
+            return@withContext Result.failure(
+                PdfExtractionException("Invalid or recycled page image provided for OCR.")
+            )
+        }
+        try {
+            val text = ocrEngine.recognizeBitmapText(bitmap).trim()
+            Result.success(text)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            AppDiagnosticLogger.warn("OCR", "Page image OCR failed: ${e.message}", e)
+            Result.failure(
+                PdfExtractionException(
+                    e.message?.takeIf { it.isNotBlank() } ?: "OCR text extraction failed on this page.",
+                    e
+                )
             )
         }
     }

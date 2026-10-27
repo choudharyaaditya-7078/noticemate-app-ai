@@ -119,7 +119,7 @@ class FastRouterService {
         }
 
         val systemPrompt = """
-            You are NoticeMate AI (PS 02 Accessibility Assistant powered by Gemma 4).
+            You are NoticeBuddy (PS 02 Accessibility Assistant powered by Gemma 4).
             Your task is to analyze a campus/public notice with STRICT EVIDENCE GROUNDING:
             1. NEVER invent, guess, or extrapolate dates, fee amounts, cutoffs, eligibility criteria, or documents that are not explicitly written in the notice.
             2. Every extracted field and checklist step MUST include an exact verbatim substring quote (`*Quote`) copied character-for-character from the source notice.
@@ -207,7 +207,7 @@ class FastRouterService {
         }
 
         val systemPrompt = """
-            You are NoticeMate AI's Evidence-Grounded Q&A Assistant powered by Gemma 4.
+            You are NoticeBuddy's Evidence-Grounded Q&A Assistant powered by Gemma 4.
             Answer the student's question ONLY using facts explicitly stated in the provided SOURCE NOTICE TEXT.
             If the answer is NOT explicitly stated in the notice, set "isAnsweredFromText": false and state clearly in both English and Hindi that the notice does not specify this detail and should be verified with the issuing office.
             Respond ONLY with valid JSON:

@@ -7,6 +7,8 @@ import com.example.BuildConfig
 import com.example.data.local.AppDiagnosticLogger
 import com.example.data.model.ExtractionSourceMethod
 import com.example.data.model.NoticeDescriptionResult
+import com.example.data.model.NoticeValidationGateResult
+import com.example.data.model.NoticeValidationStatus
 import com.google.firebase.Firebase
 import com.google.firebase.ai.ai
 import com.google.firebase.ai.type.Schema
@@ -29,16 +31,27 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 
-class NoticeAnalysisException(
+open class NoticeAnalysisException(
     message: String,
     cause: Throwable? = null
 ) : Exception(message, cause)
 
 /**
- * Backend gateway contract for executing text and single-pass multimodal notice analysis.
+ * Backend gateway contract for executing document classification and notice analysis.
  */
 interface NoticeAiGateway {
     fun isConfigured(): Boolean
+
+    suspend fun completeDocumentClassificationPrompt(
+        systemPrompt: String,
+        userPrompt: String
+    ): Result<String> = completeNoticeAnalysisPrompt(systemPrompt, userPrompt)
+
+    suspend fun completeMultimodalDocumentClassificationPrompt(
+        systemPrompt: String,
+        userPrompt: String,
+        bitmaps: List<Bitmap>
+    ): Result<String> = completeMultimodalNoticeAnalysisPrompt(systemPrompt, userPrompt, bitmaps)
 
     suspend fun completeNoticeAnalysisPrompt(
         systemPrompt: String,
@@ -68,41 +81,72 @@ class ResilientNoticeAiGateway(
             properties = mapOf(
                 "shortTitle" to Schema.string("Short, clear 4-8 word title in simple English."),
                 "titleHi" to Schema.string("Short, clear 4-8 word title in simple Hindi (Devanagari)."),
-                "summary" to Schema.string("Very simple 1-2 sentence explanation in plain English for a normal user."),
-                "summaryHi" to Schema.string("Very simple 1-2 sentence explanation in plain Hindi (Devanagari)."),
+                "summary" to Schema.string("Section 1 (In Short): Concise 1-2 sentence explanation of the notice in plain English."),
+                "summaryHi" to Schema.string("Section 1 (In Short): Concise 1-2 sentence explanation of the notice in plain Hindi (Devanagari)."),
                 "purpose" to Schema.string("Clear explanation of the purpose of the notice."),
-                "eligibility" to Schema.string("Who can apply and eligibility in simple English, or 'Not stated in the notice'."),
-                "eligibilityHi" to Schema.string("Who can apply and eligibility in simple Hindi (Devanagari)."),
                 "importantDates" to Schema.array(
                     Schema.string(),
-                    "Each stated date or deadline in simple English (e.g., '15 Sep - 4 Nov 2026: Online Application Window'), or 'Not stated in the notice'."
+                    "Section 2 (Important Dates & Deadlines): Each stated date or deadline in simple English, or 'Not stated in the notice'."
                 ),
                 "importantDatesHi" to Schema.array(
                     Schema.string(),
-                    "Each stated date or deadline in simple Hindi (Devanagari)."
+                    "Section 2 (Important Dates & Deadlines): Each stated date or deadline in simple Hindi (Devanagari), or 'नोटिस में उल्लेख नहीं है'."
                 ),
+                "eligibility" to Schema.string("Section 3 (Who Can Apply / Eligibility): Who this notice applies to or who can apply in simple English, or 'Not stated in the notice'."),
+                "eligibilityHi" to Schema.string("Section 3 (Who Can Apply / Eligibility): Who this notice applies to or who can apply in simple Hindi (Devanagari), or 'नोटिस में उल्लेख नहीं है'."),
                 "requiredDocuments" to Schema.array(
                     Schema.string(),
-                    "Each required document in simple English, or 'Not stated in the notice'."
+                    "Section 4 (Required Documents): Each required document in simple English, or 'Not stated in the notice'."
                 ),
                 "requiredDocumentsHi" to Schema.array(
                     Schema.string(),
-                    "Each required document in simple Hindi (Devanagari)."
+                    "Section 4 (Required Documents): Each required document in simple Hindi (Devanagari), or 'नोटिस में उल्लेख नहीं है'."
                 ),
-                "contactDetails" to Schema.string("Stated contact person, office, email, phone, or official website, or 'Not stated in the notice'."),
                 "nextSteps" to Schema.array(
                     Schema.string(),
-                    "Simple step-by-step actions the reader should take next in plain English."
+                    "Section 5 (What To Do Next): Actionable step-by-step instructions in plain English (without leading step numbers)."
                 ),
                 "nextStepsHi" to Schema.array(
                     Schema.string(),
-                    "Simple step-by-step actions the reader should take next in plain Hindi (Devanagari)."
+                    "Section 5 (What To Do Next): Actionable step-by-step instructions in plain Hindi (Devanagari, without leading step numbers)."
                 ),
+                "otherConditions" to Schema.array(
+                    Schema.string(),
+                    "Section 6 (Other Important Conditions): Stated fees, rules, attendance requirements, submission modes, or penalties in simple English."
+                ),
+                "otherConditionsHi" to Schema.array(
+                    Schema.string(),
+                    "Section 6 (Other Important Conditions): Stated fees, rules, attendance requirements, submission modes, or penalties in simple Hindi (Devanagari)."
+                ),
+                "contactDetails" to Schema.string("Stated contact person, office, room, email, phone, or website in English, or 'Not stated in the notice'."),
+                "contactDetailsHi" to Schema.string("Stated contact person, office, room, email, phone, or website in Hindi (Devanagari), or 'नोटिस में उल्लेख नहीं है'."),
                 "missingOrAmbiguousInfo" to Schema.array(
                     Schema.string(),
-                    "Explicit list of missing or unstated details."
+                    "Important details not specified in the notice in English."
                 ),
-                "factsVsInterpretationsNote" to Schema.string("Brief note distinguishing facts stated directly in the notice from reasonable interpretations.")
+                "missingOrAmbiguousInfoHi" to Schema.array(
+                    Schema.string(),
+                    "Important details not specified in the notice in Hindi (Devanagari)."
+                ),
+                "askNoticeBuddyQuestions" to Schema.array(
+                    Schema.string(),
+                    "Section 7 (Ask NoticeBuddy): Relevant follow-up questions the reader should ask or verify in simple English."
+                ),
+                "askNoticeBuddyQuestionsHi" to Schema.array(
+                    Schema.string(),
+                    "Section 7 (Ask NoticeBuddy): Relevant follow-up questions the reader should ask or verify in simple Hindi (Devanagari)."
+                ),
+                "factsVsInterpretationsNote" to Schema.string("Brief note distinguishing facts stated directly in the notice from unstated details."),
+                "factsVsInterpretationsNoteHi" to Schema.string("Brief note in Hindi distinguishing stated facts from unstated details.")
+            ),
+            optionalProperties = listOf(
+                "contactDetailsHi",
+                "otherConditions",
+                "otherConditionsHi",
+                "missingOrAmbiguousInfoHi",
+                "askNoticeBuddyQuestions",
+                "askNoticeBuddyQuestionsHi",
+                "factsVsInterpretationsNoteHi"
             )
         )
     }
@@ -113,6 +157,40 @@ class ResilientNoticeAiGateway(
             responseSchema = structuredSchema
             temperature = 0.1f
         }
+    }
+
+    private val classificationSchema by lazy {
+        Schema.obj(
+            properties = mapOf(
+                "classificationStatus" to Schema.string("Must be one of: VALID_NOTICE, NOT_A_NOTICE, NEEDS_CLEARER_INPUT, UNREADABLE_DOCUMENT"),
+                "documentCategory" to Schema.string("Detected category such as GOVERNMENT_NOTIFICATION, SCHOOL_OR_COLLEGE_CIRCULAR, SCHOLARSHIP_NOTICE, OFFICE_NOTICE, PUBLIC_ANNOUNCEMENT, OFFICIAL_INSTRUCTION, ESSAY_OR_ACADEMIC_PAPER, NOVEL_OR_LITERARY_TEXT, INVOICE_OR_BILL, RESUME_OR_CV, IRRELEVANT_DOCUMENT, INSUFFICIENT_OR_BLURRY, or UNREADABLE"),
+                "confidence" to Schema.double("Confidence score between 0.0 and 1.0"),
+                "reasonEn" to Schema.string("Clear, polite explanation in simple English"),
+                "reasonHi" to Schema.string("Clear, polite explanation in simple Hindi (Devanagari)")
+            )
+        )
+    }
+
+    private val classificationGenerationConfig by lazy {
+        generationConfig {
+            responseMimeType = "application/json"
+            responseSchema = classificationSchema
+            temperature = 0.0f
+        }
+    }
+
+    private val classifierFlashLiteModel by lazy {
+        Firebase.ai.generativeModel(
+            modelName = "gemini-3.5-flash-lite",
+            generationConfig = classificationGenerationConfig
+        )
+    }
+
+    private val classifierFlashModel by lazy {
+        Firebase.ai.generativeModel(
+            modelName = "gemini-3.8-flash",
+            generationConfig = classificationGenerationConfig
+        )
     }
 
     private val flashLiteModel by lazy {
@@ -130,6 +208,120 @@ class ResilientNoticeAiGateway(
     }
 
     override fun isConfigured(): Boolean = true
+
+    override suspend fun completeDocumentClassificationPrompt(
+        systemPrompt: String,
+        userPrompt: String
+    ): Result<String> = withContext(Dispatchers.IO) {
+        val combinedPrompt = "$systemPrompt\n\n$userPrompt"
+        var lastError: Exception? = null
+
+        if (firebaseAiHealthyInSession || !httpFallbackGateway.isConfigured()) {
+            try {
+                val response = withTimeout(20_000L) {
+                    runCatching {
+                        classifierFlashLiteModel.generateContent(combinedPrompt)
+                    }.getOrElse {
+                        classifierFlashModel.generateContent(combinedPrompt)
+                    }
+                }
+                val text = response.text.orEmpty().trim()
+                if (text.isNotBlank() && text.contains("{")) {
+                    firebaseAiHealthyInSession = true
+                    return@withContext Result.success(text)
+                }
+            } catch (e: TimeoutCancellationException) {
+                lastError = NoticeAnalysisException("Document verification timed out. Please check your internet connection and try again.", e)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                firebaseAiHealthyInSession = false
+                lastError = e
+            }
+        }
+
+        if (httpFallbackGateway.isConfigured()) {
+            val httpResult = httpFallbackGateway.completeDocumentClassificationPrompt(systemPrompt, userPrompt)
+            if (httpResult.isSuccess) {
+                return@withContext httpResult
+            }
+            val httpErr = httpResult.exceptionOrNull()
+            if (httpErr is Exception) {
+                lastError = httpErr
+            }
+        }
+
+        Result.failure(
+            lastError ?: NoticeAnalysisException(
+                "Unable to verify document type at this time. Please check your network connection and try again."
+            )
+        )
+    }
+
+    override suspend fun completeMultimodalDocumentClassificationPrompt(
+        systemPrompt: String,
+        userPrompt: String,
+        bitmaps: List<Bitmap>
+    ): Result<String> = withContext(Dispatchers.IO) {
+        if (bitmaps.isEmpty()) {
+            return@withContext completeDocumentClassificationPrompt(systemPrompt, userPrompt)
+        }
+        val combinedPrompt = "$systemPrompt\n\n$userPrompt"
+        var lastError: Exception? = null
+
+        if (firebaseAiHealthyInSession || !httpFallbackGateway.isConfigured()) {
+            try {
+                val multimodalContent = content {
+                    bitmaps.take(8).forEach { bmp ->
+                        if (!bmp.isRecycled) {
+                            image(bmp)
+                        }
+                    }
+                    text(combinedPrompt)
+                }
+                val response = withTimeout(25_000L) {
+                    runCatching {
+                        classifierFlashLiteModel.generateContent(multimodalContent)
+                    }.getOrElse {
+                        classifierFlashModel.generateContent(multimodalContent)
+                    }
+                }
+                val text = response.text.orEmpty().trim()
+                if (text.isNotBlank() && text.contains("{")) {
+                    firebaseAiHealthyInSession = true
+                    return@withContext Result.success(text)
+                }
+            } catch (e: TimeoutCancellationException) {
+                lastError = NoticeAnalysisException("Document image verification timed out. Please check your internet connection and try again.", e)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                firebaseAiHealthyInSession = false
+                lastError = e
+            }
+        }
+
+        if (httpFallbackGateway.isConfigured()) {
+            val httpResult = httpFallbackGateway.completeMultimodalDocumentClassificationPrompt(
+                systemPrompt = systemPrompt,
+                userPrompt = userPrompt,
+                bitmaps = bitmaps
+            )
+            if (httpResult.isSuccess) {
+                return@withContext httpResult
+            }
+            val httpErr = httpResult.exceptionOrNull()
+            if (httpErr is Exception) {
+                lastError = httpErr
+            }
+        }
+
+        Result.failure(
+            lastError ?: NoticeAnalysisException(
+                "Unable to verify the document image at this time. Please check your network connection and try again."
+            )
+        )
+    }
 
     override suspend fun completeNoticeAnalysisPrompt(
         systemPrompt: String,
@@ -213,7 +405,7 @@ class ResilientNoticeAiGateway(
             AppDiagnosticLogger.info("AI", "Starting multimodal vision analysis (${bitmaps.size} page bitmaps)...")
             try {
                 val multimodalContent = content {
-                    bitmaps.take(4).forEach { bmp ->
+                    bitmaps.take(8).forEach { bmp ->
                         if (!bmp.isRecycled) {
                             image(bmp)
                         }
@@ -718,20 +910,162 @@ class NoticeAnalysisService(
 ) {
 
     /**
+     * Phase 5 Distinct Document-Classification Step (Text / OCR Extracted Content):
+     * Inspects the extracted text and context to verify whether the document is a legitimate notice
+     * before normal summarization can occur.
+     *
+     * - Distinguishes `UNREADABLE_DOCUMENT`, `NEEDS_CLEARER_INPUT`, `NOT_A_NOTICE`, `VALID_NOTICE`,
+     *   and `CLASSIFICATION_ERROR`.
+     * - Never treats a failed classifier API call as proof that a document is not a notice.
+     * - Combines AI classification with deterministic content-and-context structural checks so an AI
+     *   prompt instruction alone is never the sole enforcement mechanism.
+     */
+    suspend fun validateNoticeDocument(
+        rawDocumentText: String,
+        extractionMethod: ExtractionSourceMethod = ExtractionSourceMethod.DIRECT_TEXT
+    ): NoticeValidationGateResult = withContext(ioDispatcher) {
+        val preCheck = NoticeValidationGate.checkPreReadabilityAndBlur(rawDocumentText)
+        if (preCheck != null) {
+            AppDiagnosticLogger.info(
+                "GATE",
+                "Pre-AI readability/blur gate triggered for $extractionMethod: status=${preCheck.status}, detail=${preCheck.technicalDetail}"
+            )
+            return@withContext preCheck
+        }
+
+        val cleaned = rawDocumentText.trim().take(maxNoticeChars)
+        val classificationUserPrompt = """
+            Classify the following extracted document content based strictly on its actual content, structure, and communicative context (ignore filenames or isolated keywords).
+            Determine whether it is a legitimate notice (VALID_NOTICE), an unrelated non-notice document (NOT_A_NOTICE), uncertain/insufficient (NEEDS_CLEARER_INPUT), or unreadable (UNREADABLE_DOCUMENT).
+
+            EXTRACTED DOCUMENT CONTENT:
+            \"\"\"
+            $cleaned
+            \"\"\"
+        """.trimIndent()
+
+        val aiResponseResult = aiGateway.completeDocumentClassificationPrompt(
+            systemPrompt = NoticeValidationGate.DOCUMENT_CLASSIFICATION_SYSTEM_PROMPT,
+            userPrompt = classificationUserPrompt
+        )
+
+        if (aiResponseResult.isFailure) {
+            val err = aiResponseResult.exceptionOrNull()
+            val cleanError = err?.message
+                ?.replace("model_not_supported: ", "")
+                ?.takeIf { it.isNotBlank() }
+                ?: "Unable to verify document type due to a service error."
+            AppDiagnosticLogger.error("GATE", "Classifier API call failed: $cleanError", err)
+            return@withContext NoticeValidationGate.buildClassificationErrorResult(cleanError)
+        }
+
+        val rawResponse = aiResponseResult.getOrDefault("")
+        val parsedAiResult = try {
+            NoticeValidationGate.parseAiClassificationResponse(rawResponse)
+        } catch (parseErr: IllegalArgumentException) {
+            AppDiagnosticLogger.warn("GATE", "Classifier returned invalid JSON: ${parseErr.message}")
+            return@withContext NoticeValidationGate.buildClassificationErrorResult(
+                "Received an invalid response format from the analysis service. Please try again."
+            )
+        }
+
+        val codeAssessment = NoticeValidationGate.analyzeContentAndContext(cleaned)
+        val finalDecision = NoticeValidationGate.combineAiAndCodeValidation(
+            aiResult = parsedAiResult,
+            codeResult = codeAssessment
+        )
+        AppDiagnosticLogger.info(
+            "GATE",
+            "Document validation gate decision: status=${finalDecision.status}, category=${finalDecision.category}, confidence=${finalDecision.confidence}"
+        )
+        finalDecision
+    }
+
+    /**
+     * Phase 5 Distinct Document-Classification Step for Multimodal / Camera-Scanned Images:
+     * Validates extracted OCR text (if present) and/or page bitmaps before normal notice analysis.
+     */
+    suspend fun validateMultimodalNoticeDocument(
+        pageBitmaps: List<Bitmap>,
+        supplementalText: String = "",
+        extractionMethod: ExtractionSourceMethod = ExtractionSourceMethod.IMAGE_NOTICE
+    ): NoticeValidationGateResult = withContext(ioDispatcher) {
+        if (pageBitmaps.isEmpty() && supplementalText.isBlank()) {
+            return@withContext NoticeValidationGate.buildUnreadableResult(
+                detail = "No readable image or text provided."
+            )
+        }
+
+        if (supplementalText.isNotBlank()) {
+            return@withContext validateNoticeDocument(
+                rawDocumentText = supplementalText,
+                extractionMethod = extractionMethod
+            )
+        }
+
+        val userPrompt = """
+            Inspect the attached document image(s) carefully and classify based on actual content and context whether this image is a legitimate notice (VALID_NOTICE), a non-notice such as a resume, invoice, essay, or novel (NOT_A_NOTICE), too blurry/unclear to tell (NEEDS_CLEARER_INPUT), or blank/unreadable (UNREADABLE_DOCUMENT).
+        """.trimIndent()
+
+        val aiResponseResult = aiGateway.completeMultimodalDocumentClassificationPrompt(
+            systemPrompt = NoticeValidationGate.DOCUMENT_CLASSIFICATION_SYSTEM_PROMPT,
+            userPrompt = userPrompt,
+            bitmaps = pageBitmaps
+        )
+
+        if (aiResponseResult.isFailure) {
+            val err = aiResponseResult.exceptionOrNull()
+            val cleanError = err?.message
+                ?.replace("model_not_supported: ", "")
+                ?.takeIf { it.isNotBlank() }
+                ?: "Unable to verify notice image due to a service error."
+            return@withContext NoticeValidationGate.buildClassificationErrorResult(cleanError)
+        }
+
+        val rawResponse = aiResponseResult.getOrDefault("")
+        val parsedAiResult = try {
+            NoticeValidationGate.parseAiClassificationResponse(rawResponse)
+        } catch (parseErr: IllegalArgumentException) {
+            return@withContext NoticeValidationGate.buildClassificationErrorResult(
+                "Received an invalid response format from the analysis service. Please try again."
+            )
+        }
+
+        parsedAiResult ?: NoticeValidationGateResult(
+            status = NoticeValidationStatus.VALID_NOTICE,
+            category = com.example.data.model.DetectedDocumentCategory.OFFICIAL_INSTRUCTION,
+            confidence = 0.85,
+            userMessageEn = "Verified notice image.",
+            userMessageHi = "मान्य नोटिस इमेज।",
+            technicalDetail = "Multimodal image validated."
+        )
+    }
+
+    /**
      * Single-pass multimodal analysis for scanned/image PDFs and direct notice photos.
-     * Sends the rendered page/notice bitmaps (and any available text) directly to the multimodal model
-     * in one fast request.
+     * Enforces the Phase 5 validation gate before executing the normal notice-analysis request.
      */
     suspend fun generateNoticeDescriptionFromMultimodal(
         pageBitmaps: List<Bitmap>,
         supplementalText: String = "",
         extractionMethod: ExtractionSourceMethod = ExtractionSourceMethod.PDF_MULTIMODAL_VISION,
-        existingLimitWarning: String? = null
+        existingLimitWarning: String? = null,
+        preValidatedGateResult: NoticeValidationGateResult? = null
     ): Result<NoticeDescriptionResult> = withContext(ioDispatcher) {
         if (pageBitmaps.isEmpty() && supplementalText.isBlank()) {
             return@withContext Result.failure(
                 NoticeAnalysisException("No readable content or image found in the selected notice.")
             )
+        }
+
+        // ENFORCEMENT POINT: Ensure document passed the Notice Validation Gate before normal notice analysis
+        val gateResult = preValidatedGateResult ?: validateMultimodalNoticeDocument(
+            pageBitmaps = pageBitmaps,
+            supplementalText = supplementalText,
+            extractionMethod = extractionMethod
+        )
+        if (!gateResult.isAllowedForNoticeAnalysis) {
+            return@withContext Result.failure(NoticeValidationGateException(gateResult))
         }
 
         val cleanedText = supplementalText.trim().take(maxNoticeChars)
@@ -773,7 +1107,8 @@ class NoticeAnalysisService(
     suspend fun generateNoticeDescription(
         rawNoticeText: String,
         extractionMethod: ExtractionSourceMethod = ExtractionSourceMethod.DIRECT_TEXT,
-        existingLimitWarning: String? = null
+        existingLimitWarning: String? = null,
+        preValidatedGateResult: NoticeValidationGateResult? = null
     ): Result<NoticeDescriptionResult> = withContext(ioDispatcher) {
         val cleaned = rawNoticeText.trim()
         if (cleaned.isBlank()) {
@@ -788,6 +1123,15 @@ class NoticeAnalysisService(
                     "Notice text is too large (${cleaned.length} characters; maximum supported is $hardRejectChars characters). Please submit a shorter notice."
                 )
             )
+        }
+
+        // ENFORCEMENT POINT: Ensure document passed the Notice Validation Gate before normal notice analysis
+        val gateResult = preValidatedGateResult ?: validateNoticeDocument(
+            rawDocumentText = cleaned,
+            extractionMethod = extractionMethod
+        )
+        if (!gateResult.isAllowedForNoticeAnalysis) {
+            return@withContext Result.failure(NoticeValidationGateException(gateResult))
         }
 
         val warnings = mutableListOf<String>()
@@ -851,9 +1195,15 @@ class NoticeAnalysisService(
                 )
             }
 
-            val obj = JSONObject(jsonCandidate)
-            val summary = obj.optString("summary", "").trim()
-            val purpose = obj.optString("purpose", "").trim()
+            val obj = parseJsonObjectResiliently(jsonCandidate)
+                ?: return Result.failure(
+                    NoticeAnalysisException(
+                        "Could not parse the notice analysis response. Please try again."
+                    )
+                )
+
+            val summary = extractFlexibleString(obj, "summary", "inShort", "in_short", "explanation")
+            val purpose = extractFlexibleString(obj, "purpose", "objective")
 
             if (summary.isBlank() && purpose.isBlank()) {
                 return Result.failure(
@@ -863,52 +1213,141 @@ class NoticeAnalysisService(
                 )
             }
 
-            fun JSONArray?.toGroundedList(defaultIfEmpty: List<String>): List<String> {
-                if (this == null) return defaultIfEmpty
-                val items = mutableListOf<String>()
-                for (i in 0 until length()) {
-                    val item = optString(i, "").trim()
-                    if (item.isNotBlank()) {
-                        items.add(item)
-                    }
-                }
-                return items.ifEmpty { defaultIfEmpty }
+            val notStatedEn = NoticeDescriptionResult.NOT_STATED
+            val notStatedHi = NoticeDescriptionResult.NOT_STATED_HI
+
+            val shortTitle = extractFlexibleString(obj, "shortTitle", "title", "heading")
+            val titleHi = extractFlexibleString(obj, "titleHi", "shortTitleHi", "headingHi")
+            val summaryHi = extractFlexibleString(obj, "summaryHi", "inShortHi", "in_short_hi", "explanationHi")
+
+            val rawEligibilityEn = extractFlexibleString(obj, "eligibility", "whoCanApply", "who_can_apply")
+            val eligibility = if (NoticeDescriptionResult.isNotSpecifiedValue(rawEligibilityEn)) {
+                notStatedEn
+            } else {
+                rawEligibilityEn
             }
 
-            val notStated = NoticeDescriptionResult.NOT_STATED
-            val shortTitle = obj.optString("shortTitle", "").trim()
-            val titleHi = obj.optString("titleHi", "").trim()
-            val summaryHi = obj.optString("summaryHi", "").trim()
-            val eligibility = obj.optString("eligibility", notStated).trim().ifBlank { notStated }
-            val eligibilityHi = obj.optString("eligibilityHi", "").trim()
-            val contactDetails = obj.optString("contactDetails", notStated).trim().ifBlank { notStated }
-            val importantDates = obj.optJSONArray("importantDates").toGroundedList(listOf(notStated))
-            val importantDatesHi = obj.optJSONArray("importantDatesHi").toGroundedList(emptyList())
-            val requiredDocuments = obj.optJSONArray("requiredDocuments").toGroundedList(listOf(notStated))
-            val requiredDocumentsHi = obj.optJSONArray("requiredDocumentsHi").toGroundedList(emptyList())
-            val nextSteps = obj.optJSONArray("nextSteps").toGroundedList(listOf(notStated))
-            val nextStepsHi = obj.optJSONArray("nextStepsHi").toGroundedList(emptyList())
-            val missingOrAmbiguous = obj.optJSONArray("missingOrAmbiguousInfo")
-                .toGroundedList(emptyList())
+            val rawEligibilityHi = extractFlexibleString(obj, "eligibilityHi", "whoCanApplyHi", "who_can_apply_hi")
+            val eligibilityHi = when {
+                rawEligibilityHi.isNotBlank() && !NoticeDescriptionResult.isNotSpecifiedValue(rawEligibilityHi) -> rawEligibilityHi
+                eligibility == notStatedEn || NoticeDescriptionResult.isNotSpecifiedValue(rawEligibilityHi) -> notStatedHi
+                else -> ""
+            }
+
+            val rawContactEn = extractFlexibleString(obj, "contactDetails", "contact", "contactInfo")
+            val contactDetails = if (NoticeDescriptionResult.isNotSpecifiedValue(rawContactEn)) {
+                notStatedEn
+            } else {
+                rawContactEn
+            }
+            val rawContactHi = extractFlexibleString(obj, "contactDetailsHi", "contactHi")
+            val contactDetailsHi = when {
+                rawContactHi.isNotBlank() && !NoticeDescriptionResult.isNotSpecifiedValue(rawContactHi) -> rawContactHi
+                contactDetails == notStatedEn -> notStatedHi
+                else -> ""
+            }
+
+            val rawDatesEn = extractFlexibleList(obj, "importantDates", "dates", "deadlines")
+                .filterNot { NoticeDescriptionResult.isNotSpecifiedValue(it) }
+            val importantDates = rawDatesEn.ifEmpty { listOf(notStatedEn) }
+
+            val rawDatesHi = extractFlexibleList(obj, "importantDatesHi", "datesHi", "deadlinesHi")
+                .filterNot { NoticeDescriptionResult.isNotSpecifiedValue(it) }
+            val importantDatesHi = when {
+                rawDatesHi.isNotEmpty() -> rawDatesHi
+                importantDates == listOf(notStatedEn) -> listOf(notStatedHi)
+                else -> emptyList()
+            }
+
+            val rawDocsEn = extractFlexibleList(obj, "requiredDocuments", "documents", "documentsRequired")
+                .filterNot { NoticeDescriptionResult.isNotSpecifiedValue(it) }
+            val requiredDocuments = rawDocsEn.ifEmpty { listOf(notStatedEn) }
+
+            val rawDocsHi = extractFlexibleList(obj, "requiredDocumentsHi", "documentsHi", "documentsRequiredHi")
+                .filterNot { NoticeDescriptionResult.isNotSpecifiedValue(it) }
+            val requiredDocumentsHi = when {
+                rawDocsHi.isNotEmpty() -> rawDocsHi
+                requiredDocuments == listOf(notStatedEn) -> listOf(notStatedHi)
+                else -> emptyList()
+            }
+
+            val rawStepsEn = extractFlexibleList(obj, "nextSteps", "whatToDoNext", "actionSteps", "steps")
+                .filterNot { NoticeDescriptionResult.isNotSpecifiedValue(it) }
+                .map { NoticeDescriptionResult.cleanStepPrefix(it) }
+            val nextSteps = rawStepsEn.ifEmpty { listOf(notStatedEn) }
+
+            val rawStepsHi = extractFlexibleList(obj, "nextStepsHi", "whatToDoNextHi", "actionStepsHi", "stepsHi")
+                .filterNot { NoticeDescriptionResult.isNotSpecifiedValue(it) }
+                .map { NoticeDescriptionResult.cleanStepPrefix(it) }
+            val nextStepsHi = when {
+                rawStepsHi.isNotEmpty() -> rawStepsHi
+                nextSteps == listOf(notStatedEn) -> listOf(notStatedHi)
+                else -> emptyList()
+            }
+
+            val otherConditions = extractFlexibleList(obj, "otherConditions", "importantConditions", "conditions")
+                .filterNot { NoticeDescriptionResult.isNotSpecifiedValue(it) }
+            val otherConditionsHi = extractFlexibleList(obj, "otherConditionsHi", "importantConditionsHi", "conditionsHi")
+                .filterNot { NoticeDescriptionResult.isNotSpecifiedValue(it) }
+
+            val missingOrAmbiguous = extractFlexibleList(obj, "missingOrAmbiguousInfo", "missingInfo")
+                .filterNot { NoticeDescriptionResult.isNotSpecifiedValue(it) }
+                .toMutableList()
+            val missingOrAmbiguousHi = extractFlexibleList(obj, "missingOrAmbiguousInfoHi", "missingInfoHi")
+                .filterNot { NoticeDescriptionResult.isNotSpecifiedValue(it) }
                 .toMutableList()
 
-            if (importantDates == listOf(notStated) &&
+            if (importantDates == listOf(notStatedEn) &&
                 missingOrAmbiguous.none { it.contains("date", ignoreCase = true) || it.contains("deadline", ignoreCase = true) }
             ) {
                 missingOrAmbiguous.add("Specific dates or deadlines are not stated in the notice.")
+                if (missingOrAmbiguousHi.none { it.contains("तिथि") || it.contains("तारीख") }) {
+                    missingOrAmbiguousHi.add("नोटिस में कोई विशिष्ट तिथि या अंतिम समय-सीमा उल्लेखित नहीं है।")
+                }
             }
-            if (contactDetails.equals(notStated, ignoreCase = true) &&
+            if (contactDetails.equals(notStatedEn, ignoreCase = true) &&
                 missingOrAmbiguous.none { it.contains("contact", ignoreCase = true) || it.contains("link", ignoreCase = true) }
             ) {
                 missingOrAmbiguous.add("Official contact details or links are not stated in the notice.")
+                if (missingOrAmbiguousHi.none { it.contains("संपर्क") || it.contains("लिंक") }) {
+                    missingOrAmbiguousHi.add("आधिकारिक संपर्क विवरण या वेबसाइट लिंक नोटिस में उल्लेखित नहीं है।")
+                }
             }
 
-            val factsNote = obj.optString(
-                "factsVsInterpretationsNote",
-                "Facts above are stated directly in the notice. Unstated or ambiguous details are explicitly marked rather than assumed."
-            ).trim().ifBlank {
-                "Facts above are stated directly in the notice. Unstated or ambiguous details are explicitly marked rather than assumed."
+            val rawQuestionsEn = extractFlexibleList(
+                obj,
+                "askNoticeBuddyQuestions",
+                "followUpQuestions",
+                "questions"
+            ).filterNot { NoticeDescriptionResult.isNotSpecifiedValue(it) }.toMutableList()
+
+            val rawQuestionsHi = extractFlexibleList(
+                obj,
+                "askNoticeBuddyQuestionsHi",
+                "followUpQuestionsHi",
+                "questionsHi"
+            ).filterNot { NoticeDescriptionResult.isNotSpecifiedValue(it) }.toMutableList()
+
+            // If AI omitted follow-up questions, derive grounded clarification questions from unstated fields without inventing facts
+            if (rawQuestionsEn.isEmpty()) {
+                if (importantDates == listOf(notStatedEn)) {
+                    rawQuestionsEn.add("What is the effective date or deadline for this notice?")
+                    rawQuestionsHi.add("इस नोटिस की प्रभावी तिथि या अंतिम समय-सीमा क्या है?")
+                }
+                if (eligibility == notStatedEn) {
+                    rawQuestionsEn.add("Which students, departments, or applicants does this notice apply to?")
+                    rawQuestionsHi.add("यह नोटिस किन छात्रों, विभागों या आवेदकों पर लागू होता है?")
+                }
+                if (contactDetails == notStatedEn) {
+                    rawQuestionsEn.add("Which office or official contact should be approached for clarification?")
+                    rawQuestionsHi.add("अधिक जानकारी या स्पष्टीकरण के लिए किस कार्यालय से संपर्क किया जाना चाहिए?")
+                }
             }
+
+            val factsNoteEn = extractFlexibleString(obj, "factsVsInterpretationsNote")
+                .ifBlank { NoticeDescriptionResult.DEFAULT_FACTS_NOTE_EN }
+            val factsNoteHi = extractFlexibleString(obj, "factsVsInterpretationsNoteHi")
+                .ifBlank { NoticeDescriptionResult.DEFAULT_FACTS_NOTE_HI }
 
             Result.success(
                 NoticeDescriptionResult(
@@ -927,11 +1366,18 @@ class NoticeAnalysisService(
                     nextSteps = nextSteps,
                     nextStepsHi = nextStepsHi,
                     missingOrAmbiguousInfo = missingOrAmbiguous,
-                    factsVsInterpretationsNote = factsNote,
+                    factsVsInterpretationsNote = factsNoteEn,
                     verificationDisclaimer = NoticeDescriptionResult.DEFAULT_VERIFICATION_DISCLAIMER,
                     extractionMethod = extractionMethod,
                     limitWarning = combinedWarning,
-                    analyzedAtMillis = System.currentTimeMillis()
+                    analyzedAtMillis = System.currentTimeMillis(),
+                    contactDetailsHi = contactDetailsHi,
+                    otherConditions = otherConditions,
+                    otherConditionsHi = otherConditionsHi,
+                    missingOrAmbiguousInfoHi = missingOrAmbiguousHi,
+                    askNoticeBuddyQuestions = rawQuestionsEn,
+                    askNoticeBuddyQuestionsHi = rawQuestionsHi,
+                    factsVsInterpretationsNoteHi = factsNoteHi
                 )
             )
         } catch (e: Exception) {
@@ -944,12 +1390,134 @@ class NoticeAnalysisService(
         }
     }
 
+    private fun parseJsonObjectResiliently(candidate: String): JSONObject? {
+        runCatching { return JSONObject(candidate) }
+        // Sanitize common LLM JSON formatting glitches: trailing commas before } or ]
+        val sanitized = candidate
+            .replace(Regex(",\\s*([}\\]])"), "$1")
+            .trim()
+        return runCatching { JSONObject(sanitized) }.getOrNull()
+    }
+
+    private fun extractFlexibleString(obj: JSONObject, vararg keys: String): String {
+        for (key in keys) {
+            if (!obj.has(key) || obj.isNull(key)) continue
+            val value = obj.opt(key) ?: continue
+            when (value) {
+                is String -> {
+                    val trimmed = value.trim()
+                    if (trimmed.isNotBlank() && !trimmed.equals("null", ignoreCase = true)) {
+                        return trimmed
+                    }
+                }
+                is JSONArray -> {
+                    val joined = (0 until value.length())
+                        .mapNotNull { idx -> value.optString(idx, "").trim().takeIf { it.isNotBlank() } }
+                        .joinToString("; ")
+                    if (joined.isNotBlank()) return joined
+                }
+                is JSONObject -> {
+                    val parts = mutableListOf<String>()
+                    val iter = value.keys()
+                    while (iter.hasNext()) {
+                        val k = iter.next()
+                        val v = value.optString(k, "").trim()
+                        if (v.isNotBlank()) parts.add(v)
+                    }
+                    if (parts.isNotEmpty()) return parts.joinToString(" — ")
+                }
+            }
+        }
+        return ""
+    }
+
+    private fun extractFlexibleList(obj: JSONObject, vararg keys: String): List<String> {
+        for (key in keys) {
+            if (!obj.has(key) || obj.isNull(key)) continue
+            val value = obj.opt(key) ?: continue
+            when (value) {
+                is JSONArray -> {
+                    val items = mutableListOf<String>()
+                    for (i in 0 until value.length()) {
+                        val elem = value.opt(i)
+                        when (elem) {
+                            is String -> {
+                                val trimmed = elem.trim()
+                                if (trimmed.isNotBlank() && !trimmed.equals("null", ignoreCase = true)) {
+                                    items.add(trimmed)
+                                }
+                            }
+                            is JSONObject -> {
+                                val parts = mutableListOf<String>()
+                                val iter = elem.keys()
+                                while (iter.hasNext()) {
+                                    val k = iter.next()
+                                    val v = elem.optString(k, "").trim()
+                                    if (v.isNotBlank()) parts.add(v)
+                                }
+                                if (parts.isNotEmpty()) items.add(parts.joinToString(": "))
+                            }
+                        }
+                    }
+                    if (items.isNotEmpty()) return items
+                }
+                is String -> {
+                    val trimmed = value.trim()
+                    if (trimmed.isNotBlank() && !trimmed.equals("null", ignoreCase = true)) {
+                        val splitLines = trimmed
+                            .split(Regex("[\\r\\n]+|(?<=\\.)\\s+(?=(?:\\d+[.)]|•|-|\\*))"))
+                            .map { line ->
+                                line.trim().replace(Regex("^(?:[•\\-*]\\s*)"), "").trim()
+                            }
+                            .filter { it.isNotBlank() }
+                        if (splitLines.isNotEmpty()) return splitLines
+                    }
+                }
+            }
+        }
+        return emptyList()
+    }
+
     private fun extractJsonObjectString(raw: String): String {
-        val trimmed = raw.trim()
-        val start = trimmed.indexOf('{')
-        val end = trimmed.lastIndexOf('}')
-        return if (start >= 0 && end > start) {
-            trimmed.substring(start, end + 1)
+        val withoutFences = raw.trim()
+            .replace(Regex("^```(?:json)?\\s*", RegexOption.IGNORE_CASE), "")
+            .replace(Regex("\\s*```$"), "")
+            .trim()
+        val start = withoutFences.indexOf('{')
+        if (start < 0) return ""
+
+        // Walk balanced braces outside string literals so trailing text with '{' doesn't corrupt extraction
+        var depth = 0
+        var inQuotes = false
+        var escaped = false
+        for (i in start until withoutFences.length) {
+            val ch = withoutFences[i]
+            if (escaped) {
+                escaped = false
+                continue
+            }
+            if (ch == '\\' && inQuotes) {
+                escaped = true
+                continue
+            }
+            if (ch == '"') {
+                inQuotes = !inQuotes
+                continue
+            }
+            if (!inQuotes) {
+                if (ch == '{') depth++
+                else if (ch == '}') {
+                    depth--
+                    if (depth == 0) {
+                        return withoutFences.substring(start, i + 1)
+                    }
+                }
+            }
+        }
+
+        val end = withoutFences.lastIndexOf('}')
+        return if (end > start) {
+            withoutFences.substring(start, end + 1)
         } else {
             ""
         }
@@ -960,33 +1528,42 @@ class NoticeAnalysisService(
         const val DEFAULT_HARD_REJECT_CHARS = 100_000
 
         val GROUNDED_DESCRIPTION_SYSTEM_PROMPT = """
-            You are NoticeMate AI, a helpful assistant that explains official notices in very simple, everyday words for students and regular users.
-            You MUST provide the explanation in BOTH Simple English AND Simple Hindi (हिंदी) in the JSON fields.
+            You are NoticeBuddy, a reliable assistant that explains official notices clearly and consistently in BOTH Simple English and Simple Hindi (हिंदी).
 
-            RULES FOR CLARITY & ACCURACY:
-            1. Keep every bullet short, direct, and easy for a basic user to understand at a glance—avoid complicated jargon.
-            2. Ground every detail strictly in the provided notice image or text. Never invent dates, eligibility, documents, or fees.
-            3. If any field is not stated in the notice, write "Not stated in the notice" in English (and "नोटिस में उल्लेख नहीं है" in Hindi).
-            4. Preserve exact dates, deadlines, amounts, and portal names accurately.
+            STRICT GROUNDING & CONSISTENCY RULES:
+            1. Present information consistently across all notices using the exact structured JSON fields below.
+            2. Ground every single detail strictly in the provided notice text or image. NEVER invent or guess dates, deadlines, eligibility criteria, required documents, fees, penalties, or contact details.
+            3. If any detail (dates, eligibility, documents, contact details, or action steps) is absent from the notice, explicitly write "Not stated in the notice" in English and "नोटिस में उल्लेख नहीं है" in Hindi.
+            4. Keep English and Hindi output consistent in meaning, tone, and item count across all sections.
+            5. In `nextSteps` and `nextStepsHi`, provide clear, actionable steps without prefixing step numbers (the app numbers them automatically).
+            6. Put any stated fees, late rules, attendance requirements, or submission conditions in `otherConditions` and `otherConditionsHi`.
+            7. In `askNoticeBuddyQuestions` and `askNoticeBuddyQuestionsHi`, provide 2-3 helpful follow-up questions the reader can ask the issuing office to clarify any unstated or important details.
 
             Respond ONLY with a valid JSON object matching this exact structure:
             {
               "shortTitle": "Short 4-8 word title in simple English",
               "titleHi": "Short 4-8 word title in simple Hindi (हिंदी)",
-              "summary": "1-2 simple sentences in plain English explaining what this notice is about.",
-              "summaryHi": "1-2 simple sentences in plain Hindi (हिंदी) explaining what this notice is about.",
-              "purpose": "Clear purpose of the notice.",
-              "eligibility": "Who this notice is for / who can apply in simple English, or 'Not stated in the notice'.",
-              "eligibilityHi": "Who this notice is for / who can apply in simple Hindi, or 'नोटिस में उल्लेख नहीं है'.",
-              "importantDates": ["Date/Deadline — what happens on this date (in simple English)"],
-              "importantDatesHi": ["तारीख/अंतिम तिथि — इस तारीख को क्या करना है (सरल हिंदी में)"],
+              "summary": "Section 1 (In Short): 1-2 simple sentences in plain English explaining what this notice is about.",
+              "summaryHi": "Section 1 (In Short): 1-2 simple sentences in plain Hindi (हिंदी) explaining what this notice is about.",
+              "purpose": "Clear purpose of the notice in plain English.",
+              "importantDates": ["Date/Deadline — what happens on this date (or 'Not stated in the notice')"],
+              "importantDatesHi": ["तारीख/अंतिम तिथि — इस तारीख को क्या करना है (या 'नोटिस में उल्लेख नहीं है')"],
+              "eligibility": "Section 3 (Who Can Apply / Eligibility) in simple English, or 'Not stated in the notice'.",
+              "eligibilityHi": "Section 3 (Who Can Apply / Eligibility) in simple Hindi, or 'नोटिस में उल्लेख नहीं है'.",
               "requiredDocuments": ["Required document in simple English, or 'Not stated in the notice'"],
               "requiredDocumentsHi": ["आवश्यक दस्तावेज़ सरल हिंदी में, या 'नोटिस में उल्लेख नहीं है'"],
-              "contactDetails": "Website, office, or contact stated in the notice, or 'Not stated in the notice'.",
-              "nextSteps": ["Step 1 in simple English", "Step 2 in simple English"],
+              "nextSteps": ["Actionable step 1 in simple English", "Actionable step 2 in simple English"],
               "nextStepsHi": ["कदम 1 सरल हिंदी में", "कदम 2 सरल हिंदी में"],
-              "missingOrAmbiguousInfo": ["Any missing detail"],
-              "factsVsInterpretationsNote": "Stated facts are taken directly from the notice."
+              "otherConditions": ["Any stated fee, rule, penalty, or submission condition in simple English"],
+              "otherConditionsHi": ["कोई भी उल्लिखित शुल्क, नियम या महत्वपूर्ण शर्त सरल हिंदी में"],
+              "contactDetails": "Website, office, or contact stated in the notice, or 'Not stated in the notice'.",
+              "contactDetailsHi": "नोटिस में दिया गया कार्यालय, वेबसाइट या संपर्क विवरण, या 'नोटिस में उल्लेख नहीं है'.",
+              "missingOrAmbiguousInfo": ["Any important detail not specified in the notice (in English)"],
+              "missingOrAmbiguousInfoHi": ["कोई महत्वपूर्ण जानकारी जो नोटिस में निर्दिष्ट नहीं है (हिंदी में)"],
+              "askNoticeBuddyQuestions": ["Relevant follow-up question 1 in English", "Relevant follow-up question 2 in English"],
+              "askNoticeBuddyQuestionsHi": ["प्रासंगिक अनुवर्ती प्रश्न 1 हिंदी में", "प्रासंगिक अनुवर्ती प्रश्न 2 हिंदी में"],
+              "factsVsInterpretationsNote": "Stated facts are taken directly from the notice; absent details are explicitly marked as not specified.",
+              "factsVsInterpretationsNoteHi": "यहाँ दिए गए तथ्य सीधे नोटिस से लिए गए हैं; अनुपस्थित विवरण स्पष्ट रूप से चिह्नित किए गए हैं।"
             }
         """.trimIndent()
     }

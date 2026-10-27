@@ -37,7 +37,7 @@ object AppDiagnosticLogger {
     val logs: StateFlow<List<DiagnosticLogEntry>> = _logs.asStateFlow()
 
     init {
-        info("SYSTEM", "NoticeMate Diagnostic Logger initialized.")
+        info("SYSTEM", "NoticeBuddy Diagnostic Logger initialized.")
     }
 
     fun info(tag: String, message: String) {
@@ -63,7 +63,7 @@ object AppDiagnosticLogger {
             return "No diagnostic logs recorded."
         }
         return buildString {
-            appendLine("=== NoticeMate AI Diagnostic Logs (${snapshot.size} entries) ===")
+            appendLine("=== NoticeBuddy Diagnostic Logs (${snapshot.size} entries) ===")
             snapshot.forEach { entry ->
                 appendLine("[${entry.timestampFormatted}] [${entry.level.name}] [${entry.tag}] ${entry.message}")
             }

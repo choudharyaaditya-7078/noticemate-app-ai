@@ -14,6 +14,7 @@ import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.example.data.local.RecentNoticeStorage
 import com.example.data.pdf.PdfNoticeExtractor
+import com.example.data.remote.AndroidNetworkConnectivityMonitor
 import com.example.data.remote.NoticeAnalysisService
 import com.example.ui.screens.NoticeMateHomeApp
 import com.example.ui.viewmodel.HomePhaseViewModel
@@ -86,6 +87,7 @@ class MainActivity : ComponentActivity() {
             val appContext = LocalContext.current.applicationContext
             val storage = remember(appContext) { RecentNoticeStorage(appContext) }
             val pdfExtractor = remember(appContext) { PdfNoticeExtractor(appContext) }
+            val networkMonitor = remember(appContext) { AndroidNetworkConnectivityMonitor(appContext) }
             val analysisService = remember { NoticeAnalysisService() }
             val homeViewModel: HomePhaseViewModel = viewModel(
                 factory = viewModelFactory {
@@ -93,7 +95,8 @@ class MainActivity : ComponentActivity() {
                         HomePhaseViewModel(
                             storage = storage,
                             analysisService = analysisService,
-                            pdfExtractor = pdfExtractor
+                            pdfExtractor = pdfExtractor,
+                            networkMonitor = networkMonitor
                         )
                     }
                 }

@@ -593,7 +593,7 @@ fun GapDetectionAlertCard(
             }
 
             Text(
-                text = "NoticeMate AI refuses to invent unstated facts. Verify these missing requirements with the issuing office:",
+                text = "NoticeBuddy refuses to invent unstated facts. Verify these missing requirements with the issuing office:",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onTertiaryContainer
             )

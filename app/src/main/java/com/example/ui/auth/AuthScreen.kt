@@ -247,7 +247,7 @@ fun AuthScreen(
                 ) {
                     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         Text(
-                            text = "NOTICEMATE AI",
+                            text = "NOTICEBUDDY",
                             style = MaterialTheme.typography.displayMedium,
                             color = MaterialTheme.colorScheme.onPrimary
                         )
